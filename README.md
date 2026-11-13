@@ -5,8 +5,7 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 3 of 10: the database is loaded and the two tools (`describe_schema`,
-> `run_sql`) are tested; the agent comes next.
+> Work in progress. Day 4 of 10: the agent runs from the terminal; the evaluation comes next.
 
 ## Data
 
@@ -91,6 +90,7 @@ cp .env.example .env        # then edit the password
 docker compose up -d        # PostgreSQL on localhost:5432
 uv sync                     # Python 3.11 + dev tools
 uv run python -m data.load  # clean the dumps and load the database
+uv run python -m agent.cli "Which chain has the cheapest whole milk per litre?"
 uv run ruff check .
 uv run python -m pytest
 ```
