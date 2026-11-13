@@ -5,8 +5,8 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 5 of 10: the agent runs from the terminal and the 50 evaluation
-> questions are written; the first measurement comes next.
+> Work in progress. Day 6 of 10: the agent is measured on 50 questions; analysing the
+> failures and improving it comes next.
 
 ## Data
 
@@ -108,6 +108,45 @@ Each question has a reference SQL and the answer it returns. Decisions:
   the schema does not have (sales, margins, stock, customers), for a forecast, or are
   ambiguous.
 
+## First measurement
+
+`uv run python -m evals.run` asks the 50 questions one at a time, grades each answer and
+writes `evals/results/<run id>.csv` (one row per question) and a line in
+`evals/results/summary.csv`. Baseline, 2026-11-13, Claude Haiku 5.5, prompt v1:
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| Accuracy (50 questions) | 90 % (45) | 98 % (49) |
+| Correct refusals | 10 of 10 | 10 of 10 |
+| Answerable questions wrongly refused | 3 | 1 |
+| SQL valid at first try | 85.7 % | 84.1 % |
+| Failed queries (all corrected) | 7 | 7 |
+| Tokens, in / out | 439,968 / 30,968 | 436,837 / 31,943 |
+| Cost of the whole run | 0.054 EUR | 0.054 EUR |
+| Latency, median / p90 / max | 5.5 / 9.9 / 21.2 s | 5.9 / 8.8 / 16.2 s |
+
+The two runs are not the same experiment, and the difference is part of the result:
+
+- Every failure of run 1 was read by hand. Two were not the agent's fault: the grader
+  rejected a correct date (T06: right answer on top of 200 sorted rows, written in words)
+  and one question could be read two ways (T08). Both were fixed before run 2, with a test
+  for the grader. Counting those two as right, run 1 would be 94 %.
+- The other three failures of run 1, and the only one of run 2, are the same bug: the agent
+  returns its final answer before running any query, with `answerable = false` and an empty
+  text. It hit three questions in run 1 and one in run 2; only T04 failed both times. With
+  50 questions each one is worth 2 points, so run-to-run noise is at least that large.
+
+What the numbers do not show:
+
+- **The questions are easier than real ones.** They name the category tag and say average
+  or median; a user would not. 98 % is the accuracy on well-specified questions.
+- **Language.** The agent answered at least 7 of the 40 English questions in French in run 2
+  (the data is French). The grader does not check the language, so these count as right.
+- **How the grader decides.** A number is right if it is within 1 % and appears in the
+  answer text or in the first row of the agent's result; a table is right if every expected
+  row is in the result. The rules are in `evals/grading.py`. Cost uses 0.10 / 0.50 USD per
+  million tokens and the ECB rate of 2026-11-12 (1 EUR = 1.1081 USD).
+
 ## Run it
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
@@ -119,6 +158,7 @@ uv sync                     # Python 3.11 + dev tools
 uv run python -m data.load  # clean the dumps and load the database
 uv run python -m agent.cli "Which chain has the cheapest whole milk per litre?"
 uv run python -m evals.questions   # check the 50 questions against the database
+uv run python -m evals.run         # measure the agent on them (about 6 minutes, 0.05 EUR)
 uv run ruff check .
 uv run python -m pytest
 ```

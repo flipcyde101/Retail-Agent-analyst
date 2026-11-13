@@ -1,0 +1,3 @@
+run_id,date,model,prompt_version,questions,accuracy_pct,accuracy_answerable_pct,correct_refusals,refusal_questions,wrongly_refused,sql_valid_first_try_pct,failed_queries,runs_failed,input_tokens,output_tokens,cost_eur,cost_per_question_eur,latency_median_s,latency_p90_s,latency_max_s
+20261113-150305_claude-haiku-5-5_v1,2026-11-13,anthropic:claude-haiku-5-5,v1,50,90.0,87.5,10,10,3,85.7,7,0,439968,30968,0.0537,0.00107,5.5,9.9,21.2
+20261113-150931_claude-haiku-5-5_v1,2026-11-13,anthropic:claude-haiku-5-5,v1,50,98.0,97.5,10,10,1,84.1,7,0,436837,31943,0.0538,0.00108,5.9,8.8,16.2

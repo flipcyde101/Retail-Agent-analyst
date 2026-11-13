@@ -480,7 +480,8 @@ questions:
   expected: 0.46
 - id: T08
   category: evolution
-  question: How many distinct products had at least one price in each year from 2024 to 2026?
+  question: For each year from 2024 to 2026 separately, how many distinct products had at least
+    one price that year?
   answer_type: rows
   ordered: true
   reference_sql: |
