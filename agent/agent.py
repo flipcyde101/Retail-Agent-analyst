@@ -20,44 +20,25 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from agent import tools
 from agent.db import ROOT
+from agent.language import NAMES, detect_language
 from agent.models import SchemaDescription, SqlResult
+from agent.prompts import PROMPTS
 from agent.sql_guard import SqlValidationError
 from agent.tools import SqlExecutionError
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v3"
+# Versions that also get the checks added on day 7 (SQL clean-up, no refusal before looking
+# at the schema, no empty answer). v1 runs exactly as it was first measured.
+STRICT_VERSIONS = frozenset(PROMPTS) - {"v1"}
+# Versions where the code, not only the prompt, takes care of the answer's language.
+LANGUAGE_VERSIONS = frozenset(PROMPTS) - {"v1", "v2"}
+# The stricter checks send more answers back, so they need more room than the default of 1.
+STRICT_OUTPUT_RETRIES = 3
 
 # A failed query can be corrected twice: 3 attempts in a row, then the run stops.
 MAX_SQL_ATTEMPTS = 3
 # Hard ceiling on model calls per question, so a confused model cannot loop (and bill) forever.
 MAX_MODEL_REQUESTS = 12
-
-INSTRUCTIONS = """\
-You are a retail price analyst. You answer questions about supermarket prices using a
-PostgreSQL database, and you never state a number that did not come from a query you ran.
-
-How to work:
-1. Call describe_schema first to see the tables, columns and their comments.
-2. Write one PostgreSQL SELECT and run it with run_sql. Every query needs a LIMIT (max 200).
-3. If run_sql returns an error, read the message, fix the query and run it again.
-4. If you are unsure which values exist (category tags, product names, chain names), run a
-   small exploratory query before the final one instead of guessing.
-5. Return the final answer.
-
-About the data:
-- All stores are in France and all prices are in EUR. Product names are mostly in French
-  and category tags are in English (for example 'en:whole-milks'); translate the user's
-  words accordingly.
-- To compare products of different sizes, use the view v_price_per_unit (EUR per kg or l).
-- locations.chain is NULL for independent shops: exclude them when comparing chains.
-- Coverage is uneven. When a result rests on very few rows, say so and lower the confidence.
-
-The final answer:
-- answer: one to three sentences, in the language of the question, with the key numbers.
-- sql: the exact query, as you ran it, whose result supports the answer.
-- If the database cannot answer the question (data that does not exist, another country,
-  a product or period with no rows), set answerable to false, explain why in answer and
-  leave sql empty. Never invent a figure.
-"""
 
 
 class AgentAnswer(BaseModel):
@@ -84,14 +65,31 @@ class SqlAttempt(BaseModel):
     ok: bool
     error: str | None = None
     row_count: int | None = None
+    # True when stray characters after the SQL were removed before running it.
+    repaired: bool = False
 
 
 @dataclass
 class RunState:
     """Per-question memory shared by the tools: what was run and what came back."""
 
+    prompt_version: str = PROMPT_VERSION
+    # en, es, fr or unknown: guessed from the question, used by the versions that enforce it.
+    question_language: str = "unknown"
+    schema_seen: bool = False
     attempts: list[SqlAttempt] = field(default_factory=list)
     results: dict[str, SqlResult] = field(default_factory=dict)
+
+    @property
+    def strict(self) -> bool:
+        return self.prompt_version in STRICT_VERSIONS
+
+    @property
+    def required_language(self) -> str | None:
+        """The language the answer must be in, when this version enforces one."""
+        if self.prompt_version in LANGUAGE_VERSIONS and self.question_language in NAMES:
+            return self.question_language
+        return None
 
 
 class AgentRun(BaseModel):
@@ -115,18 +113,35 @@ def _normalise(sql: str) -> str:
     return " ".join(sql.strip().rstrip(";").split()).lower()
 
 
+def strip_json_debris(sql: str) -> str:
+    """Remove a stray quote or brace the model sometimes leaves after the SQL.
+
+    Seen in 4 of the 7 failed queries of the first measurement: the tool argument arrives as
+    `SELECT ... LIMIT 200"}`. A valid query here always ends in the LIMIT number, so trailing
+    quotes and braces are never part of it. The cleaned query is still validated.
+    """
+    return sql.rstrip().rstrip('"}').rstrip()
+
+
 # defer_model_check: importing this file must not require an API key (tests, CI).
-agent = Agent(
-    output_type=AgentAnswer,
-    instructions=INSTRUCTIONS,
-    deps_type=RunState,
-    defer_model_check=True,
-)
+agent = Agent(output_type=AgentAnswer, deps_type=RunState, defer_model_check=True)
 
 
-@agent.tool_plain
-def describe_schema() -> SchemaDescription:
+@agent.instructions
+def instructions(ctx: RunContext[RunState]) -> str:
+    text = PROMPTS[ctx.deps.prompt_version]
+    language = ctx.deps.required_language
+    if language:
+        # Telling the model beats asking it to work it out: with the prompt rule alone (v2)
+        # it kept answering English questions in French, the language of the data.
+        text += f"\nThis question is written in {NAMES[language]}: answer in {NAMES[language]}.\n"
+    return text
+
+
+@agent.tool
+def describe_schema(ctx: RunContext[RunState]) -> SchemaDescription:
     """List the tables and views with their columns, types and comments. Call this first."""
+    ctx.deps.schema_seen = True
     return tools.describe_schema()
 
 
@@ -137,29 +152,53 @@ def run_sql(ctx: RunContext[RunState], query: str) -> SqlResult:
     The query must be a single SELECT with a LIMIT of at most 200. On error the message
     explains what to fix.
     """
+    cleaned = strip_json_debris(query) if ctx.deps.strict else query
+    repaired = cleaned != query.rstrip()
     try:
-        result = tools.run_sql(query)
+        result = tools.run_sql(cleaned)
     except (SqlValidationError, SqlExecutionError) as error:
-        ctx.deps.attempts.append(SqlAttempt(sql=query, ok=False, error=str(error)))
+        ctx.deps.attempts.append(
+            SqlAttempt(sql=cleaned, ok=False, error=str(error), repaired=repaired)
+        )
         # ModelRetry sends the message back to the model as "try again", and counts
         # against the tool's retries. This is the self-correction loop.
         raise ModelRetry(str(error)) from error
-    ctx.deps.attempts.append(SqlAttempt(sql=query, ok=True, row_count=result.row_count))
-    ctx.deps.results[_normalise(query)] = result
+    ctx.deps.attempts.append(
+        SqlAttempt(sql=cleaned, ok=True, row_count=result.row_count, repaired=repaired)
+    )
+    ctx.deps.results[_normalise(cleaned)] = result
     return result
 
 
 @agent.output_validator
 def answer_is_backed_by_a_query(ctx: RunContext[RunState], output: AgentAnswer) -> AgentAnswer:
     """Reject an answer whose SQL was never executed: that is how invented numbers get in."""
+    state = ctx.deps
+    if state.strict and not output.answer.strip():
+        raise ModelRetry("The answer field is empty. Write the answer, or explain the refusal.")
+    required = state.required_language
+    written = detect_language(output.answer)
+    if required and written in NAMES and written != required:
+        raise ModelRetry(
+            f"The answer is written in {NAMES[written]} but the question is in "
+            f"{NAMES[required]}. Return the same answer written in {NAMES[required]}."
+        )
     if not output.answerable:
+        if state.strict and not state.schema_seen:
+            # Seen in the first measurement: the model "answered" before doing anything,
+            # with answerable = false, and the run ended there.
+            raise ModelRetry(
+                "You have not looked at the database yet. Call describe_schema, and run a "
+                "query if the data might exist, before deciding the question has no answer."
+            )
         return output.model_copy(update={"sql": None})
-    if not output.sql or _normalise(output.sql) not in ctx.deps.results:
+    sql = strip_json_debris(output.sql) if state.strict and output.sql else output.sql
+    if not sql or _normalise(sql) not in state.results:
         raise ModelRetry(
             "The sql field must be exactly a query you ran successfully with run_sql. "
             "Run the query first, or set answerable to false if the data does not exist."
         )
-    return output
+    return output.model_copy(update={"sql": sql})
 
 
 def default_model() -> str:
@@ -174,11 +213,17 @@ def default_model() -> str:
         ) from None
 
 
-def ask(question: str, model: Model | str | None = None) -> AgentRun:
+def ask(
+    question: str, model: Model | str | None = None, prompt_version: str = PROMPT_VERSION
+) -> AgentRun:
     """Answer one question. Never raises for a model that gives up: it reports it instead."""
+    if prompt_version not in PROMPTS:
+        raise ValueError(f"Unknown prompt version {prompt_version!r}; have {sorted(PROMPTS)}")
+    # The API key lives in .env too, and it is needed whichever way the model was chosen.
+    load_dotenv(ROOT / ".env")
     model = model or default_model()
     model_name = model if isinstance(model, str) else model.model_name
-    state = RunState()
+    state = RunState(prompt_version=prompt_version, question_language=detect_language(question))
     started = time.perf_counter()
     # Our own counter, so tokens are still known when the run ends in an exception.
     usage = RunUsage()
@@ -191,6 +236,7 @@ def ask(question: str, model: Model | str | None = None) -> AgentRun:
             deps=state,
             usage=usage,
             usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
+            retries={"output": STRICT_OUTPUT_RETRIES} if state.strict else None,
         )
         answer = result.output
     except (UnexpectedModelBehavior, UsageLimitExceeded) as failure:
@@ -210,6 +256,7 @@ def ask(question: str, model: Model | str | None = None) -> AgentRun:
         attempts=state.attempts,
         error=error,
         model=model_name,
+        prompt_version=prompt_version,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         requests=usage.requests,

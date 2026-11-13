@@ -5,8 +5,8 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 6 of 10: the agent is measured on 50 questions; analysing the
-> failures and improving it comes next.
+> Work in progress. Day 7 of 10: the agent is measured, its failures analysed and fixed
+> ([evaluation report](evals/REPORT.md)); the demo comes next.
 
 ## Data
 
@@ -108,78 +108,41 @@ Each question has a reference SQL and the answer it returns. Decisions:
   the schema does not have (sales, margins, stock, customers), for a forecast, or are
   ambiguous.
 
-## First measurement
+## Results
 
-`uv run python -m evals.run` asks the 50 questions one at a time, grades each answer and
-writes `evals/results/<run id>.csv` (one row per question) and a line in
-`evals/results/summary.csv`. Baseline, 2026-11-13, Claude Haiku 5.5, prompt v1:
+Full analysis in [evals/REPORT.md](evals/REPORT.md): failure types with an example each, what
+fixed them, and two comparisons (three prompt versions, two models). Core set of 50 questions,
+2026-11-13, one question at a time:
 
-| | Run 1 | Run 2 |
-|---|---|---|
-| Accuracy (50 questions) | 90 % (45) | 98 % (49) |
-| Correct refusals | 10 of 10 | 10 of 10 |
-| Answerable questions wrongly refused | 3 | 1 |
-| SQL valid at first try | 85.7 % | 84.1 % |
-| Failed queries (all corrected) | 7 | 7 |
-| Tokens, in / out | 439,968 / 30,968 | 436,837 / 31,943 |
-| Cost of the whole run | 0.054 EUR | 0.054 EUR |
-| Latency, median / p90 / max | 5.5 / 9.9 / 21.2 s | 5.9 / 8.8 / 16.2 s |
+| | Haiku 5.5, prompt v1 | Haiku 5.5, prompt v3 | Sonnet 5.5, prompt v3 |
+|---|---|---|---|
+| Accuracy | 98 % (49) | 100 % (50), twice | 98 % (49) |
+| Correct refusals | 10 of 10 | 10 of 10 | 9 of 10 |
+| Answers in the wrong language | 13 | 0 | 0 |
+| SQL valid at first try | 86.7 % | 95.6 % and 97.8 % | 100 % |
+| Cost of the run | 0.055 EUR | 0.056 and 0.057 EUR | 1.695 EUR |
+| Latency, median / p90 | 4.7 / 7.9 s | 4.3 / 7.0 s and 4.9 / 7.4 s | 6.8 / 12.2 s |
 
-The two runs are not the same experiment, and the difference is part of the result:
+On the natural set (`evals/questions_natural.yaml`, 22 questions worded like a user's, run
+with `--set natural`) prompt v3 gets 20 of the 20 graded automatically and 4 of 4 refusals;
+two open comparisons are read by hand.
 
-- Every failure of run 1 was read by hand. Two were not the agent's fault: the grader
-  rejected a correct date (T06: right answer on top of 200 sorted rows, written in words)
-  and one question could be read two ways (T08). Both were fixed before run 2, with a test
-  for the grader. Counting those two as right, run 1 would be 94 %.
-- The other three failures of run 1, and the only one of run 2, are the same bug: the agent
-  returns its final answer before running any query, with `answerable = false` and an empty
-  text. It hit three questions in run 1 and one in run 2; only T04 failed both times. With
-  50 questions each one is worth 2 points, so run-to-run noise is at least that large.
+What to keep in mind when reading these numbers:
 
-What the numbers do not show:
-
-- **The core questions are easier than real ones.** They name the category tag and say
-  average or median; a user would not. That is what the natural set below is for.
-- **Language.** The agent answered at least 7 of the 40 English questions in French in run 2
-  (the data is French). The grader does not check the language, so these count as right.
+- **Each question is worth 2 points**, and the same agent on the same questions has scored
+  90 % and 98 %. The clear effects of v3 are the language (13 wrong answers to 0) and the
+  failed queries (6 to 1 or 2), not the last two points of accuracy.
+- **A rule in the prompt did not fix the language; a check in code did.** Prompt v2 told the
+  model to answer in the language of the question and 8 answers still came back in French.
+- **The larger model is not better here**: 30 times the cost per question, slower, same
+  accuracy within noise.
+- **Seven of the questions marked wrong along the way were the evaluation's fault** (grader
+  rules, ambiguous wording), found by reading the failures. They are listed in the report.
 - **How the grader decides.** A number is right if it is within 1 % and appears in the
   answer text or in the first row of the agent's result; a table is right if every expected
-  row is in the result. The rules are in `evals/grading.py`. Cost uses 0.10 / 0.50 USD per
-  million tokens and the ECB rate of 2026-11-12 (1 EUR = 1.1081 USD).
-
-### Natural set
-
-`evals/questions_natural.yaml` has 22 questions worded the way a user would ask them
-("Where is whole milk cheapest?"), with no column names or category tags. Run it with
-`uv run python -m evals.run --set natural`. Same day, model and prompt:
-
-| | Run 1 | Run 2 |
-|---|---|---|
-| Graded automatically | 22 | 20 |
-| Accuracy | 86.4 % (19) | 100 % (20) |
-| Left for manual review | 0 | 2 |
-| Correct refusals | 4 of 4 | 4 of 4 |
-| Latency, median / p90 / max | 5.4 / 10.7 / 21.7 s | 5.7 / 13.0 / 17.0 s |
-
-Again the difference between the runs is the evaluation, not the agent. The three failures
-of run 1, read by hand, were all good answers that the rules could not recognise:
-
-- **N14**: the right figures were in the text, with a different (like-for-like) query
-  attached. The grader now accepts a table whose names and figures are all stated in the
-  answer, with a test.
-- **N10** ("Where is whole milk cheapest?"): Auchan by mean, E.Leclerc by median. The agent
-  chose the median and said so; the reference used the mean.
-- **N11** ("Which is cheaper for butter, Carrefour or Leclerc?"): right answer, but both
-  names are in any answer and the result was sorted by name.
-
-N10 and N11 are now `answer_type: manual`: the runner asks them and saves the answer, a
-person reads it, and they do not count in the accuracy. Both answers of run 2 were good on
-reading (Auchan among chains with real coverage, small samples set aside; E.Leclerc for
-butter by mean and median).
-
-The honest conclusion of the natural set: on questions with one defensible answer the agent
-is as good as on the core set, and the open comparisons, where the method is a choice, are
-the ones a rule-based grader cannot score.
+  row is in the result. The rules are in `evals/grading.py`. Cost uses the list prices per
+  million tokens (Haiku 5.5: 0.10 / 0.50 USD; Sonnet 5.5: 2 / 10 USD) and the ECB rate of
+  2026-11-12 (1 EUR = 1.1081 USD).
 
 ## Run it
 
@@ -192,7 +155,7 @@ uv sync                     # Python 3.11 + dev tools
 uv run python -m data.load  # clean the dumps and load the database
 uv run python -m agent.cli "Which chain has the cheapest whole milk per litre?"
 uv run python -m evals.questions   # check the 50 questions against the database
-uv run python -m evals.run         # measure the agent on them (about 6 minutes, 0.05 EUR)
+uv run python -m evals.run         # measure the agent on them (about 5 minutes, 0.06 EUR)
 uv run ruff check .
 uv run python -m pytest
 ```

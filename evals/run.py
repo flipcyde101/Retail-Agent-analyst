@@ -4,6 +4,7 @@ Usage:
     uv run python -m evals.run                       # all questions, model from .env
     uv run python -m evals.run --model anthropic:claude-haiku-5-5 --workers 4   # faster
     uv run python -m evals.run --set natural         # the questions worded like a user's
+    uv run python -m evals.run --prompt v1           # an older prompt version, to compare
     uv run python -m evals.run --only L01 R03        # a few questions, nothing is saved
 
 Two files come out of a full run:
@@ -24,6 +25,8 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from agent.agent import PROMPT_VERSION, AgentRun, ask, default_model
+from agent.language import detect_language
+from agent.prompts import PROMPTS
 from evals.grading import grade
 from evals.questions import QUESTION_SETS, Question, load_questions
 
@@ -33,6 +36,7 @@ SUMMARY_PATH = RESULTS_DIR / "summary.csv"
 # USD per million tokens (input, output). A model that is not here gets no cost, not a guess.
 PRICES_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-haiku-5-5": (0.10, 0.50),
+    "claude-sonnet-5-5": (2.00, 10.00),
 }
 # ECB reference rate of 2026-11-12: 1 EUR = 1.1081 USD.
 USD_TO_EUR = 1 / 1.1081
@@ -55,8 +59,11 @@ class QuestionResult(BaseModel):
     grade_reason: str
     answerable: bool
     confidence: str
+    answer_language: str  # en, es, fr or unknown, as detected in the answer text
+    language_ok: bool  # False only when another language than the question's is detected
     queries: int
     failed_queries: int
+    repaired_queries: int  # queries with stray characters removed before running
     first_query_ok: bool | None  # None when the agent ran no query
     requests: int
     input_tokens: int
@@ -66,6 +73,7 @@ class QuestionResult(BaseModel):
     error: str | None
     sql: str | None
     answer: str
+    sql_errors: str  # the error of each failed query, as JSON
     result_rows: str  # first rows of the agent's result, as JSON, to review failures
 
 
@@ -84,8 +92,10 @@ class Summary(BaseModel):
     correct_refusals: int
     refusal_questions: int
     wrongly_refused: int
+    wrong_language: int
     sql_valid_first_try_pct: float | None
     failed_queries: int
+    repaired_queries: int
     runs_failed: int
     input_tokens: int
     output_tokens: int
@@ -109,8 +119,9 @@ def evaluate_one(
     model: str,
     run_id: str,
     day: str,
-    ask_fn: Callable[[str, str], AgentRun] = ask,
+    ask_fn: Callable[[str, str, str], AgentRun] = ask,
     question_set: str = "core",
+    prompt_version: str = PROMPT_VERSION,
 ) -> QuestionResult:
     """Ask one question and grade it. A crash (network, rate limit) is a wrong answer."""
     common = {
@@ -118,14 +129,14 @@ def evaluate_one(
         "date": day,
         "question_set": question_set,
         "model": model,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
         "id": question.id,
         "category": question.category,
         "language": question.language,
         "answer_type": question.answer_type,
     }
     try:
-        run = ask_fn(question.question, model)
+        run = ask_fn(question.question, model, prompt_version)
     except Exception as error:  # noqa: BLE001 - one broken question must not stop the other 49
         return QuestionResult(
             **common,
@@ -133,8 +144,11 @@ def evaluate_one(
             grade_reason="the agent raised an exception",
             answerable=False,
             confidence="low",
+            answer_language="unknown",
+            language_ok=True,
             queries=0,
             failed_queries=0,
+            repaired_queries=0,
             first_query_ok=None,
             requests=0,
             input_tokens=0,
@@ -144,18 +158,23 @@ def evaluate_one(
             error=f"{type(error).__name__}: {error}",
             sql=None,
             answer="",
+            sql_errors="[]",
             result_rows="[]",
         )
 
     result = grade(question, run)
+    language = detect_language(run.answer.answer)
     return QuestionResult(
         **common,
         correct=result.correct,
         grade_reason=result.reason,
         answerable=run.answer.answerable,
         confidence=run.answer.confidence,
+        answer_language=language,
+        language_ok=language in (question.language, "unknown"),
         queries=len(run.attempts),
         failed_queries=sum(not a.ok for a in run.attempts),
+        repaired_queries=sum(a.repaired for a in run.attempts),
         first_query_ok=run.attempts[0].ok if run.attempts else None,
         requests=run.requests,
         input_tokens=run.input_tokens,
@@ -165,6 +184,7 @@ def evaluate_one(
         error=run.error,
         sql=run.answer.sql,
         answer=run.answer.answer,
+        sql_errors=json.dumps([a.error for a in run.attempts if not a.ok], ensure_ascii=False),
         result_rows=json.dumps(
             run.data.rows[:ROWS_KEPT] if run.data else [], default=str, ensure_ascii=False
         ),
@@ -199,12 +219,14 @@ def summarise(results: list[QuestionResult]) -> Summary:
         correct_refusals=sum(r.correct for r in refusals),
         refusal_questions=len(refusals),
         wrongly_refused=sum(not r.answerable and not r.error for r in answerable),
+        wrong_language=sum(not r.language_ok for r in everything),
         sql_valid_first_try_pct=(
             _pct(sum(bool(r.first_query_ok) for r in with_queries), len(with_queries))
             if with_queries
             else None
         ),
         failed_queries=sum(r.failed_queries for r in everything),
+        repaired_queries=sum(r.repaired_queries for r in everything),
         runs_failed=sum(r.error is not None for r in everything),
         input_tokens=sum(r.input_tokens for r in everything),
         output_tokens=sum(r.output_tokens for r in everything),
@@ -232,16 +254,17 @@ def run_all(
     questions: list[Question],
     model: str,
     workers: int = 1,
-    ask_fn: Callable[[str, str], AgentRun] = ask,
+    ask_fn: Callable[[str, str, str], AgentRun] = ask,
     question_set: str = "core",
+    prompt_version: str = PROMPT_VERSION,
 ) -> list[QuestionResult]:
     """Evaluate the questions a few at a time; results come back in question order."""
     now = datetime.now()
-    run_id = f"{now:%Y%m%d-%H%M%S}_{question_set}_{model.split(':')[-1]}_{PROMPT_VERSION}"
+    run_id = f"{now:%Y%m%d-%H%M%S}_{question_set}_{model.split(':')[-1]}_{prompt_version}"
     day = f"{now:%Y-%m-%d}"
 
     def one(question: Question) -> QuestionResult:
-        result = evaluate_one(question, model, run_id, day, ask_fn, question_set)
+        result = evaluate_one(question, model, run_id, day, ask_fn, question_set, prompt_version)
         mark = {True: "ok  ", False: "FAIL", None: "??  "}[result.correct]
         print(f"{mark} {result.id}  {result.seconds:5.1f}s  {result.grade_reason}", flush=True)
         return result
@@ -260,8 +283,10 @@ def render(summary: Summary) -> str:
             f"manual review       {summary.manual_review} (not counted above)",
             f"correct refusals    {summary.correct_refusals} of {summary.refusal_questions}",
             f"wrongly refused     {summary.wrongly_refused}",
+            f"wrong language      {summary.wrong_language}",
             f"SQL valid 1st try   {summary.sql_valid_first_try_pct} %",
             f"failed queries      {summary.failed_queries}",
+            f"repaired queries    {summary.repaired_queries}",
             f"runs that gave up   {summary.runs_failed}",
             f"tokens              {summary.input_tokens} in / {summary.output_tokens} out",
             f"cost                {cost}",
@@ -282,6 +307,7 @@ def main() -> None:
     )
     parser.add_argument("--only", nargs="+", metavar="ID", help="run these ids, save nothing")
     parser.add_argument("--set", choices=list(QUESTION_SETS), default="core", dest="set_name")
+    parser.add_argument("--prompt", choices=sorted(PROMPTS), default=PROMPT_VERSION)
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -295,7 +321,9 @@ def main() -> None:
         if not questions:
             sys.exit("No question has any of those ids.")
 
-    results = run_all(questions, model, args.workers, question_set=args.set_name)
+    results = run_all(
+        questions, model, args.workers, question_set=args.set_name, prompt_version=args.prompt
+    )
     summary = summarise(results)
     print()
     print(render(summary))

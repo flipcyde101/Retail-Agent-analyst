@@ -145,3 +145,112 @@ def test_an_unanswerable_question_has_no_sql_and_no_data():
     assert run.data is None
     assert run.attempts == []
     assert run.error is None
+
+
+# --- day 7: what prompt v2 adds, each from a failure seen in the first measurement ---
+
+DIRTY_SQL = GOOD_SQL + '"}'
+REFUSAL = answer(answerable=False, answer="There is no data for Spain.", sql=None, chart="none")
+
+
+def test_v2_removes_the_stray_quote_and_brace_after_the_sql():
+    run = ask("Which chain is cheapest?", scripted_model(("sql", DIRTY_SQL), answer()))
+
+    assert [(a.ok, a.repaired) for a in run.attempts] == [(True, True)]
+    assert run.attempts[0].sql == GOOD_SQL
+    assert run.data == FAKE_ROWS
+
+
+def test_v1_still_fails_on_the_stray_characters_as_first_measured():
+    steps = scripted_model(("sql", DIRTY_SQL), ("sql", GOOD_SQL), answer())
+    run = ask("Which chain is cheapest?", steps, prompt_version="v1")
+
+    assert [(a.ok, a.repaired) for a in run.attempts] == [(False, False), (True, False)]
+    assert run.prompt_version == "v1"
+
+
+def test_v2_rejects_a_refusal_made_before_looking_at_the_database():
+    run = ask("Cheapest chain in Spain?", scripted_model(REFUSAL, ("describe",), REFUSAL))
+
+    assert run.requests == 3  # the first refusal was sent back
+    assert not run.answer.answerable
+    assert run.error is None
+
+
+def test_v1_accepts_that_premature_refusal():
+    run = ask("Cheapest chain in Spain?", scripted_model(REFUSAL), prompt_version="v1")
+
+    assert run.requests == 1
+
+
+def test_v2_rejects_an_empty_answer():
+    empty = answer(answer="  ")
+    run = ask("Which chain is cheapest?", scripted_model(("sql", GOOD_SQL), empty, answer()))
+
+    assert run.requests == 3
+    assert run.answer.answer.strip()
+
+
+def test_v2_gives_a_rejected_answer_more_than_one_chance():
+    # Found measuring v2: two answers sent back in a row ended the run with the default of 1.
+    empty = answer(answer="")
+    steps = scripted_model(("sql", GOOD_SQL), empty, empty, answer())
+    run = ask("Which chain is cheapest?", steps, prompt_version="v2")
+
+    assert run.error is None
+    assert run.requests == 4
+
+
+FRENCH = answer(answer="Auchan est le moins cher, avec une moyenne de 2,50 EUR dans les magasins.")
+
+
+def test_v3_tells_the_model_the_language_of_the_question():
+    seen = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(info.instructions)
+        return ModelResponse(parts=[ToolCallPart("describe_schema", {})])
+
+    ask("¿Qué cadena tiene los precios más baratos?", FunctionModel(respond))
+
+    assert "answer in Spanish" in seen[0]
+
+
+def test_v3_sends_back_an_answer_in_another_language_than_the_question():
+    steps = scripted_model(("sql", GOOD_SQL), FRENCH, answer())
+    run = ask("Which chain has the cheapest prices of them all?", steps)
+
+    assert run.requests == 3
+    assert run.answer.answer == "Auchan averages 2.50 EUR."
+
+
+def test_v2_leaves_the_language_to_the_prompt():
+    steps = scripted_model(("sql", GOOD_SQL), FRENCH)
+    run = ask("Which chain has the cheapest prices of them all?", steps, prompt_version="v2")
+
+    assert run.requests == 2
+    assert "moins cher" in run.answer.answer
+
+
+def test_a_question_too_short_to_tell_its_language_is_not_enforced():
+    run = ask("Auchan?", scripted_model(("sql", GOOD_SQL), FRENCH))
+
+    assert run.requests == 2
+
+
+def test_each_version_sends_its_own_instructions():
+    seen = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(info.instructions)
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, REFUSAL[1])])
+
+    ask("Anything?", FunctionModel(respond), prompt_version="v1")
+
+    assert "Language:" not in seen[0]
+    assert "retail price analyst" in seen[0]
+
+
+def test_an_unknown_prompt_version_is_an_error():
+    with pytest.raises(ValueError, match="v9"):
+        ask("Anything?", scripted_model(REFUSAL), prompt_version="v9")

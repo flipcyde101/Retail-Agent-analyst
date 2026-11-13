@@ -5,6 +5,9 @@
 #   text     one value (a date, a name), right if equal
 #   rows     a small table; `ordered: true` means the order is part of the answer
 #   refusal  the agent must say it cannot answer (answerable = false)
+#   manual   not graded automatically: the right answer depends on the method (mean or
+#            median, which products count), so a person reads it; `reason` says what a
+#            good answer contains, and it does not count in the accuracy
 #
 # `expected` is written by `uv run python -m evals.questions --update`; do not edit it.
 
@@ -501,21 +504,22 @@ questions:
   answer_type: rows
   ordered: true
   reference_sql: |
-    SELECT extract(quarter FROM date)::int AS quarter, count(*) AS prices
+    SELECT count(*) AS prices
     FROM prices
     WHERE date >= '2026-01-01' AND date < '2027-01-01'
-    GROUP BY quarter
-    ORDER BY quarter
+    GROUP BY extract(quarter FROM date)
+    ORDER BY extract(quarter FROM date)
     LIMIT 4
   expected:
-  - [1, 53824]
-  - [2, 15343]
-  - [3, 18839]
-  - [4, 7464]
+  - [53824]
+  - [15343]
+  - [18839]
+  - [7464]
 - id: T10
   category: evolution
   language: es
-  question: ¿Cuántas tiendas distintas registraron al menos un precio en cada año de 2023 a 2026?
+  question: Para cada año de 2023 a 2026 por separado, ¿cuántas tiendas distintas registraron
+    al menos un precio ese año?
   answer_type: rows
   ordered: true
   reference_sql: |

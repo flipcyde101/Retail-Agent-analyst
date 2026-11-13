@@ -38,7 +38,7 @@ QUESTIONS = [
 ]
 
 
-def fake_ask(question: str, model: str) -> AgentRun:
+def fake_ask(question: str, model: str, prompt_version: str = "v2") -> AgentRun:
     """Right on stores (after one failed query), wrong on products, refuses Spain."""
     if "Spain" in question:
         answer = AgentAnswer(answerable=False, answer="No data.", chart="none", confidence="high")
@@ -143,3 +143,30 @@ def test_manual_questions_are_counted_apart_and_left_out_of_the_accuracy():
     assert (summary.questions, summary.manual_review) == (1, 1)
     assert summary.accuracy_pct == 100.0
     assert summary.input_tokens == 2_000_000  # the cost of every question is still counted
+
+
+def test_the_prompt_version_reaches_the_agent_and_the_results():
+    seen = []
+
+    def spy(question: str, model: str, prompt_version: str) -> AgentRun:
+        seen.append(prompt_version)
+        return fake_ask(question, model)
+
+    results = run_all(QUESTIONS[:1], MODEL, ask_fn=spy, prompt_version="v1")
+
+    assert seen == ["v1"]
+    assert results[0].prompt_version == "v1"
+    assert results[0].run_id.endswith("_v1")
+
+
+def test_an_answer_in_another_language_is_counted_but_still_graded_on_its_content():
+    def french(question: str, model: str, prompt_version: str) -> AgentRun:
+        run = fake_ask(question, model)
+        text = "La base contient 2 285 magasins, et ils sont tous dans le pays."
+        return run.model_copy(update={"answer": run.answer.model_copy(update={"answer": text})})
+
+    results = run_all(QUESTIONS[:1], MODEL, ask_fn=french)
+
+    assert results[0].correct
+    assert (results[0].answer_language, results[0].language_ok) == ("fr", False)
+    assert summarise(results).wrong_language == 1
