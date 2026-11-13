@@ -1,0 +1,18 @@
+# Secrets
+.env
+
+# Data dumps are downloaded, never committed
+data/raw/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
