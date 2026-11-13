@@ -1,0 +1,265 @@
+# Natural set: questions worded the way a user would ask them. No column names, no category
+# tags, no "average or median". Each one was kept only if the reasonable ways of reading it
+# give the same answer, so that it can still be graded automatically. Where the figure
+# depends on the reading (which products count as "butter"), only the name is expected.
+#
+# Same fields and answer types as questions.yaml.
+# `expected` is written by `uv run python -m evals.questions --set natural --update`.
+
+questions:
+
+# ---------------------------------------------------------------- lookup
+- id: N01
+  category: lookup
+  language: es
+  question: ¿Qué supermercado tiene más tiendas?
+  answer_type: rows
+  reference_sql: |
+    SELECT chain, count(*) AS stores
+    FROM locations
+    WHERE chain IS NOT NULL
+    GROUP BY chain
+    ORDER BY stores DESC
+    LIMIT 1
+  expected:
+  - [Carrefour, 381]
+- id: N02
+  category: lookup
+  question: How many organic shops, Biocoop plus Naturalia, are in there?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM locations WHERE chain IN ('Biocoop', 'Naturalia') LIMIT 1
+  expected: 103
+- id: N03
+  category: lookup
+  question: How many different products does Lidl have prices for?
+  answer_type: number
+  reference_sql: |
+    SELECT count(DISTINCT p.product_code)
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain = 'Lidl'
+    LIMIT 1
+  expected: 959
+- id: N04
+  category: lookup
+  question: How many shops are there in Lyon?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM locations WHERE city = 'Lyon' LIMIT 1
+  expected: 97
+
+# ---------------------------------------------------------------- aggregation
+- id: N05
+  category: aggregation
+  question: Which supermarket do you have the most prices for?
+  answer_type: rows
+  reference_sql: |
+    SELECT l.chain, count(*) AS prices
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain IS NOT NULL
+    GROUP BY l.chain
+    ORDER BY prices DESC
+    LIMIT 1
+  expected:
+  - [E.Leclerc, 52842]
+- id: N06
+  category: aggregation
+  question: What share of the prices are promotions?
+  answer_type: number
+  reference_sql: |
+    SELECT round(100.0 * count(*) FILTER (WHERE is_discounted) / count(*), 2)
+    FROM prices
+    LIMIT 1
+  expected: 2.5
+- id: N07
+  category: aggregation
+  question: Which city has the most shops?
+  answer_type: rows
+  reference_sql: |
+    SELECT city, count(*) AS stores
+    FROM locations
+    WHERE city IS NOT NULL
+    GROUP BY city
+    ORDER BY stores DESC
+    LIMIT 1
+  expected:
+  - [Paris, 349]
+- id: N08
+  category: aggregation
+  language: es
+  question: ¿Cuál es la marca con más productos?
+  answer_type: rows
+  reference_sql: |
+    SELECT trim(b) AS brand
+    FROM products, unnest(string_to_array(brand, ',')) AS b
+    GROUP BY trim(b)
+    ORDER BY count(*) DESC
+    LIMIT 1
+  expected:
+  - [Carrefour]
+- id: N09
+  category: aggregation
+  language: es
+  question: ¿Qué porcentaje de las tiendas está en París?
+  answer_type: number
+  reference_sql: |
+    SELECT round(100.0 * count(*) FILTER (WHERE city = 'Paris') / count(*), 2)
+    FROM locations
+    LIMIT 1
+  expected: 15.27
+
+# ---------------------------------------------------------------- comparison
+- id: N10
+  category: comparison
+  question: Where is whole milk cheapest?
+  answer_type: manual
+  reason: Auchan by average price per litre, E.Leclerc by median. A good answer names one of them
+    with its method and sets aside chains with one or two observations (Lidl, Aldi).
+  reference_sql: |
+    SELECT chain
+    FROM v_price_per_unit
+    WHERE 'en:whole-milks' = ANY(categories) AND per_unit = 'l' AND chain IS NOT NULL
+    GROUP BY chain
+    HAVING count(*) >= 20
+    ORDER BY avg(price_per_unit)
+    LIMIT 1
+  expected:
+  - [Auchan]
+- id: N11
+  category: comparison
+  question: Which is cheaper for butter, Carrefour or Leclerc?
+  answer_type: manual
+  reason: E.Leclerc, by average and by median, on all butter or on the products both sell. Both
+    names appear in any answer, so a rule cannot tell which one the agent chose.
+  reference_sql: |
+    SELECT chain
+    FROM v_price_per_unit
+    WHERE 'en:butters' = ANY(categories)
+      AND per_unit = 'kg' AND chain IN ('Carrefour', 'E.Leclerc')
+    GROUP BY chain
+    ORDER BY avg(price_per_unit)
+    LIMIT 1
+  expected:
+  - [E.Leclerc]
+- id: N12
+  category: comparison
+  question: Out of Leclerc, Carrefour, Auchan and U, who is cheapest for pasta?
+  answer_type: rows
+  reference_sql: |
+    SELECT chain
+    FROM v_price_per_unit
+    WHERE 'en:pastas' = ANY(categories)
+      AND per_unit = 'kg' AND chain IN ('E.Leclerc', 'Carrefour', 'Auchan', 'U')
+    GROUP BY chain
+    ORDER BY avg(price_per_unit)
+    LIMIT 1
+  expected:
+  - [E.Leclerc]
+- id: N13
+  category: comparison
+  question: How many products are sold at both Lidl and Aldi?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*)
+    FROM (
+      SELECT p.product_code
+      FROM prices p JOIN locations l ON l.id = p.location_id
+      WHERE l.chain IN ('Lidl', 'Aldi')
+      GROUP BY p.product_code
+      HAVING count(DISTINCT l.chain) = 2
+    ) AS in_both
+    LIMIT 1
+  expected: 8
+- id: N14
+  category: comparison
+  question: Is Monoprix pricier than Lidl? What is the average price at each?
+  answer_type: rows
+  reference_sql: |
+    SELECT l.chain, round(avg(p.price), 2) AS avg_price
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain IN ('Lidl', 'Monoprix')
+    GROUP BY l.chain
+    ORDER BY l.chain
+    LIMIT 2
+  expected:
+  - [Lidl, 2.51]
+  - [Monoprix, 4.88]
+
+# ---------------------------------------------------------------- evolution
+- id: N15
+  category: evolution
+  language: es
+  question: ¿Cómo ha crecido el número de precios año a año desde 2022?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT extract(year FROM date)::int AS year, count(*) AS prices
+    FROM prices
+    WHERE date >= '2022-01-01'
+    GROUP BY year
+    ORDER BY year
+    LIMIT 5
+  expected:
+  - [2022, 4511]
+  - [2023, 6490]
+  - [2024, 27641]
+  - [2025, 44736]
+  - [2026, 95470]
+- id: N16
+  category: evolution
+  question: Which month has the most prices ever?
+  answer_type: rows
+  reference_sql: |
+    SELECT count(*) AS prices
+    FROM prices
+    GROUP BY date_trunc('month', date)
+    ORDER BY prices DESC
+    LIMIT 1
+  expected:
+  - [29003]
+- id: N17
+  category: evolution
+  question: How far back does the data go?
+  answer_type: text
+  reference_sql: |
+    SELECT min(date) FROM prices LIMIT 1
+  expected: '2010-07-08'
+- id: N18
+  category: evolution
+  question: How many prices are from before 2020?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM prices WHERE date < '2020-01-01' LIMIT 1
+  expected: 2291
+
+# ---------------------------------------------------------------- refusal
+- id: N19
+  category: refusal
+  language: es
+  question: ¿Es más barato Mercadona o Carrefour?
+  answer_type: refusal
+  reason: There is no Mercadona in the data, so the comparison cannot be made.
+  reference_sql: |
+    SELECT count(*) FROM locations
+    WHERE chain ILIKE '%mercadona%' OR store_brand ILIKE '%mercadona%' OR name ILIKE '%mercadona%'
+    LIMIT 1
+  expected: 0
+- id: N20
+  category: refusal
+  question: How much money did Lidl make last year?
+  answer_type: refusal
+  reason: There is no revenue or sales data, only shelf prices.
+- id: N21
+  category: refusal
+  question: What's on offer next week at Auchan?
+  answer_type: refusal
+  reason: The data has past observations only; future promotions are not in it.
+- id: N22
+  category: refusal
+  language: es
+  question: ¿Cuánto cuesta el aceite de oliva en Portugal?
+  answer_type: refusal
+  reason: All stores are in France.
+  reference_sql: |
+    SELECT count(*) FROM locations WHERE country <> 'FR' LIMIT 1
+  expected: 0

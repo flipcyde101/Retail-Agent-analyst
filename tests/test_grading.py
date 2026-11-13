@@ -13,7 +13,7 @@ from evals.questions import Question
 
 def question(answer_type="number", expected=30805, **fields) -> Question:
     category = "refusal" if answer_type == "refusal" else "lookup"
-    reason = "no data" if answer_type == "refusal" else None
+    fields.setdefault("reason", "no data" if answer_type == "refusal" else None)
     sql = None if answer_type == "refusal" else "SELECT 1 LIMIT 1"
     return Question(
         id="X01",
@@ -21,7 +21,6 @@ def question(answer_type="number", expected=30805, **fields) -> Question:
         question="?",
         answer_type=answer_type,
         reference_sql=sql,
-        reason=reason,
         expected=expected,
         **fields,
     )
@@ -166,3 +165,28 @@ def test_a_refusal_is_right_only_when_the_agent_refuses_by_itself():
 def test_refusing_or_failing_a_question_that_has_an_answer_is_wrong():
     assert not grade(question(), run("I cannot tell.", answerable=False)).correct
     assert not grade(question(), run("30805", answerable=False, error="boom")).correct
+
+
+def test_rows_stated_in_the_text_count_when_the_attached_query_is_another_one():
+    # Found on the natural set: right figures in the sentence, a like-for-like query attached.
+    q = question("rows", [["Lidl", 2.51], ["Monoprix", 4.88]])
+    text = "Yes: 4.88 EUR at Monoprix versus 2.51 EUR at Lidl."
+    assert grade(q, run(text, rows=[[37, 12.63, 16.38]])).correct
+    assert not grade(q, run("Yes: 4.88 EUR at Monoprix.", rows=[[37, 12.63, 16.38]])).correct
+
+
+def test_a_name_without_a_figure_is_never_accepted_from_the_text():
+    q = question("rows", [["E.Leclerc"]])
+    assert not grade(q, run("E.Leclerc is cheaper than Carrefour.", rows=[["Carrefour"]])).correct
+
+
+def test_ordered_rows_are_not_accepted_from_the_text():
+    q = question("rows", [[2024, 3.57], [2025, 3.74]], ordered=True)
+    assert not grade(q, run("3.57 in 2024 and 3.74 in 2025.", rows=[[1]])).correct
+
+
+def test_a_manual_question_gets_no_verdict():
+    q = question("manual", [["Auchan"]], reason="Auchan by mean, E.Leclerc by median.")
+    result = grade(q, run("E.Leclerc, by median.", rows=[["E.Leclerc"]]))
+    assert result.correct is None
+    assert "Auchan by mean" in result.reason

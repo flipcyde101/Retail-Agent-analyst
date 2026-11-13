@@ -3,6 +3,7 @@
 Usage:
     uv run python -m evals.run                       # all questions, model from .env
     uv run python -m evals.run --model anthropic:claude-haiku-5-5 --workers 4   # faster
+    uv run python -m evals.run --set natural         # the questions worded like a user's
     uv run python -m evals.run --only L01 R03        # a few questions, nothing is saved
 
 Two files come out of a full run:
@@ -24,7 +25,7 @@ from pydantic import BaseModel
 
 from agent.agent import PROMPT_VERSION, AgentRun, ask, default_model
 from evals.grading import grade
-from evals.questions import Question, load_questions
+from evals.questions import QUESTION_SETS, Question, load_questions
 
 RESULTS_DIR = Path(__file__).parent / "results"
 SUMMARY_PATH = RESULTS_DIR / "summary.csv"
@@ -43,13 +44,14 @@ class QuestionResult(BaseModel):
 
     run_id: str
     date: str
+    question_set: str
     model: str
     prompt_version: str
     id: str
     category: str
     language: str
     answer_type: str
-    correct: bool
+    correct: bool | None  # None: left for manual review
     grade_reason: str
     answerable: bool
     confidence: str
@@ -72,9 +74,11 @@ class Summary(BaseModel):
 
     run_id: str
     date: str
+    question_set: str
     model: str
     prompt_version: str
     questions: int
+    manual_review: int
     accuracy_pct: float
     accuracy_answerable_pct: float
     correct_refusals: int
@@ -106,11 +110,13 @@ def evaluate_one(
     run_id: str,
     day: str,
     ask_fn: Callable[[str, str], AgentRun] = ask,
+    question_set: str = "core",
 ) -> QuestionResult:
     """Ask one question and grade it. A crash (network, rate limit) is a wrong answer."""
     common = {
         "run_id": run_id,
         "date": day,
+        "question_set": question_set,
         "model": model,
         "prompt_version": PROMPT_VERSION,
         "id": question.id,
@@ -171,18 +177,23 @@ def _pct(part: int, whole: int) -> float:
 
 def summarise(results: list[QuestionResult]) -> Summary:
     first = results[0]
+    everything = results
+    # Accuracy is over the questions that have a verdict; the manual ones are counted apart.
+    results = [r for r in everything if r.correct is not None]
     refusals = [r for r in results if r.answer_type == "refusal"]
     answerable = [r for r in results if r.answer_type != "refusal"]
     with_queries = [r for r in results if r.first_query_ok is not None]
-    seconds = sorted(r.seconds for r in results)
-    costs = [r.cost_eur for r in results]
+    seconds = sorted(r.seconds for r in everything)
+    costs = [r.cost_eur for r in everything]
     total_cost = None if None in costs else round(sum(costs), 4)
     return Summary(
         run_id=first.run_id,
         date=first.date,
+        question_set=first.question_set,
         model=first.model,
         prompt_version=first.prompt_version,
         questions=len(results),
+        manual_review=len(everything) - len(results),
         accuracy_pct=_pct(sum(r.correct for r in results), len(results)),
         accuracy_answerable_pct=_pct(sum(r.correct for r in answerable), len(answerable)),
         correct_refusals=sum(r.correct for r in refusals),
@@ -193,12 +204,14 @@ def summarise(results: list[QuestionResult]) -> Summary:
             if with_queries
             else None
         ),
-        failed_queries=sum(r.failed_queries for r in results),
-        runs_failed=sum(r.error is not None for r in results),
-        input_tokens=sum(r.input_tokens for r in results),
-        output_tokens=sum(r.output_tokens for r in results),
+        failed_queries=sum(r.failed_queries for r in everything),
+        runs_failed=sum(r.error is not None for r in everything),
+        input_tokens=sum(r.input_tokens for r in everything),
+        output_tokens=sum(r.output_tokens for r in everything),
         cost_eur=total_cost,
-        cost_per_question_eur=None if total_cost is None else round(total_cost / len(results), 5),
+        cost_per_question_eur=(
+            None if total_cost is None else round(total_cost / len(everything), 5)
+        ),
         latency_median_s=round(statistics.median(seconds), 1),
         latency_p90_s=round(seconds[min(len(seconds) - 1, int(0.9 * len(seconds)))], 1),
         latency_max_s=round(seconds[-1], 1),
@@ -220,15 +233,16 @@ def run_all(
     model: str,
     workers: int = 1,
     ask_fn: Callable[[str, str], AgentRun] = ask,
+    question_set: str = "core",
 ) -> list[QuestionResult]:
     """Evaluate the questions a few at a time; results come back in question order."""
     now = datetime.now()
-    run_id = f"{now:%Y%m%d-%H%M%S}_{model.split(':')[-1]}_{PROMPT_VERSION}"
+    run_id = f"{now:%Y%m%d-%H%M%S}_{question_set}_{model.split(':')[-1]}_{PROMPT_VERSION}"
     day = f"{now:%Y-%m-%d}"
 
     def one(question: Question) -> QuestionResult:
-        result = evaluate_one(question, model, run_id, day, ask_fn)
-        mark = "ok  " if result.correct else "FAIL"
+        result = evaluate_one(question, model, run_id, day, ask_fn, question_set)
+        mark = {True: "ok  ", False: "FAIL", None: "??  "}[result.correct]
         print(f"{mark} {result.id}  {result.seconds:5.1f}s  {result.grade_reason}", flush=True)
         return result
 
@@ -240,9 +254,10 @@ def render(summary: Summary) -> str:
     cost = "unknown" if summary.cost_eur is None else f"{summary.cost_eur:.4f} EUR"
     return "\n".join(
         [
-            f"run {summary.run_id}",
+            f"run {summary.run_id} ({summary.question_set} set)",
             f"accuracy            {summary.accuracy_pct} % of {summary.questions} "
             f"({summary.accuracy_answerable_pct} % of the answerable ones)",
+            f"manual review       {summary.manual_review} (not counted above)",
             f"correct refusals    {summary.correct_refusals} of {summary.refusal_questions}",
             f"wrongly refused     {summary.wrongly_refused}",
             f"SQL valid 1st try   {summary.sql_valid_first_try_pct} %",
@@ -266,6 +281,7 @@ def main() -> None:
         help="questions in parallel; more than 1 is faster but inflates the latency figures",
     )
     parser.add_argument("--only", nargs="+", metavar="ID", help="run these ids, save nothing")
+    parser.add_argument("--set", choices=list(QUESTION_SETS), default="core", dest="set_name")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -273,13 +289,13 @@ def main() -> None:
         model = args.model or default_model()
     except RuntimeError as error:
         sys.exit(str(error))
-    questions = load_questions()
+    questions = load_questions(QUESTION_SETS[args.set_name])
     if args.only:
         questions = [q for q in questions if q.id in args.only]
         if not questions:
             sys.exit("No question has any of those ids.")
 
-    results = run_all(questions, model, args.workers)
+    results = run_all(questions, model, args.workers, question_set=args.set_name)
     summary = summarise(results)
     print()
     print(render(summary))

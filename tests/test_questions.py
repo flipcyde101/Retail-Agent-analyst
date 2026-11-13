@@ -10,6 +10,7 @@ import pytest
 from agent.db import connect
 from agent.sql_guard import validate_sql
 from evals.questions import (
+    QUESTION_SETS,
     Question,
     database_problems,
     dump_questions,
@@ -19,6 +20,8 @@ from evals.questions import (
 )
 
 QUESTIONS = load_questions()
+NATURAL = load_questions(QUESTION_SETS["natural"])
+WITH_SQL = [q for q in QUESTIONS + NATURAL if q.reference_sql]
 
 
 def _database_is_up() -> bool:
@@ -34,13 +37,21 @@ def test_there_are_fifty_questions_ten_per_category_with_unique_ids():
     assert structure_problems(QUESTIONS) == []
 
 
-@pytest.mark.parametrize("question", [q for q in QUESTIONS if q.reference_sql], ids=lambda q: q.id)
+def test_the_natural_set_has_unique_ids_and_no_schema_words_in_its_questions():
+    assert structure_problems(NATURAL, per_category=None) == []
+    assert structure_problems(QUESTIONS + NATURAL, per_category=None) == []
+    for q in NATURAL:
+        assert "en:" not in q.question and "barcode" not in q.question, q.id
+
+
+@pytest.mark.parametrize("question", WITH_SQL, ids=lambda q: q.id)
 def test_every_reference_sql_obeys_the_rules_the_agent_obeys(question):
     validate_sql(question.reference_sql)
 
 
 def test_every_answerable_question_has_an_expected_answer():
-    missing = [q.id for q in QUESTIONS if q.answer_type != "refusal" and q.expected is None]
+    everything = QUESTIONS + NATURAL
+    missing = [q.id for q in everything if q.answer_type != "refusal" and q.expected is None]
     assert missing == []
 
 
@@ -77,3 +88,4 @@ def test_writing_the_file_and_reading_it_back_changes_nothing(tmp_path):
 @pytest.mark.skipif(not _database_is_up(), reason="database not reachable")
 def test_stored_expected_answers_match_the_database():
     assert database_problems(QUESTIONS) == []
+    assert database_problems(NATURAL) == []

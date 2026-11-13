@@ -84,7 +84,7 @@ Known limitations, left in on purpose and relevant for the evaluation:
 
 ## Evaluation set
 
-`evals/questions.yaml` holds 50 questions, 10 per category, 10 of them in Spanish:
+`evals/questions.yaml` is the core set: 50 questions, 10 per category, 10 of them in Spanish:
 
 | Category | What it tests | Example |
 |---|---|---|
@@ -138,14 +138,48 @@ The two runs are not the same experiment, and the difference is part of the resu
 
 What the numbers do not show:
 
-- **The questions are easier than real ones.** They name the category tag and say average
-  or median; a user would not. 98 % is the accuracy on well-specified questions.
+- **The core questions are easier than real ones.** They name the category tag and say
+  average or median; a user would not. That is what the natural set below is for.
 - **Language.** The agent answered at least 7 of the 40 English questions in French in run 2
   (the data is French). The grader does not check the language, so these count as right.
 - **How the grader decides.** A number is right if it is within 1 % and appears in the
   answer text or in the first row of the agent's result; a table is right if every expected
   row is in the result. The rules are in `evals/grading.py`. Cost uses 0.10 / 0.50 USD per
   million tokens and the ECB rate of 2026-11-12 (1 EUR = 1.1081 USD).
+
+### Natural set
+
+`evals/questions_natural.yaml` has 22 questions worded the way a user would ask them
+("Where is whole milk cheapest?"), with no column names or category tags. Run it with
+`uv run python -m evals.run --set natural`. Same day, model and prompt:
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| Graded automatically | 22 | 20 |
+| Accuracy | 86.4 % (19) | 100 % (20) |
+| Left for manual review | 0 | 2 |
+| Correct refusals | 4 of 4 | 4 of 4 |
+| Latency, median / p90 / max | 5.4 / 10.7 / 21.7 s | 5.7 / 13.0 / 17.0 s |
+
+Again the difference between the runs is the evaluation, not the agent. The three failures
+of run 1, read by hand, were all good answers that the rules could not recognise:
+
+- **N14**: the right figures were in the text, with a different (like-for-like) query
+  attached. The grader now accepts a table whose names and figures are all stated in the
+  answer, with a test.
+- **N10** ("Where is whole milk cheapest?"): Auchan by mean, E.Leclerc by median. The agent
+  chose the median and said so; the reference used the mean.
+- **N11** ("Which is cheaper for butter, Carrefour or Leclerc?"): right answer, but both
+  names are in any answer and the result was sorted by name.
+
+N10 and N11 are now `answer_type: manual`: the runner asks them and saves the answer, a
+person reads it, and they do not count in the accuracy. Both answers of run 2 were good on
+reading (Auchan among chains with real coverage, small samples set aside; E.Leclerc for
+butter by mean and median).
+
+The honest conclusion of the natural set: on questions with one defensible answer the agent
+is as good as on the core set, and the open comparisons, where the method is a choice, are
+the ones a rule-based grader cannot score.
 
 ## Run it
 

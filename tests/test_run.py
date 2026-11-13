@@ -116,3 +116,30 @@ def test_results_are_written_and_the_summary_file_is_appended(tmp_path):
     assert len(rows) == 2
     assert rows[0]["accuracy_pct"] == "66.7"
     assert rows[0]["model"] == MODEL
+    assert rows[0]["question_set"] == "core"
+
+
+def test_the_question_set_is_recorded_in_the_run_id_and_in_every_row():
+    results = run_all(QUESTIONS, MODEL, ask_fn=fake_ask, question_set="natural")
+
+    assert {r.question_set for r in results} == {"natural"}
+    assert "_natural_" in results[0].run_id
+    assert summarise(results).question_set == "natural"
+
+
+def test_manual_questions_are_counted_apart_and_left_out_of_the_accuracy():
+    manual = Question(
+        id="M01",
+        category="comparison",
+        question="Where are stores cheapest?",
+        answer_type="manual",
+        reference_sql="SELECT 1 LIMIT 1",
+        reason="Depends on the method.",
+    )
+    results = run_all([QUESTIONS[0], manual], MODEL, ask_fn=fake_ask)
+    summary = summarise(results)
+
+    assert [r.correct for r in results] == [True, None]
+    assert (summary.questions, summary.manual_review) == (1, 1)
+    assert summary.accuracy_pct == 100.0
+    assert summary.input_tokens == 2_000_000  # the cost of every question is still counted

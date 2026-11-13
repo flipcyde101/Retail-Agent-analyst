@@ -7,8 +7,10 @@ Pure functions: no model, no database. The rules, by answer_type:
   text     the expected value is in the answer text, or in the first row of the result
   rows     every expected row is found in the result of the agent's query; if the question
            is ordered, in the same order; if a single row is expected ("which chain is the
-           cheapest?"), it must be the first row of the agent's result
+           cheapest?"), it must be the first row of the agent's result. Failing that, an
+           unordered answer is right if the text states every name with its figure
   refusal  the agent said answerable = false, by itself (a run that crashed is not a refusal)
+  manual   no verdict (correct = None): a person reads the answer
 
 The rules err on the strict side: a doubtful answer counts as wrong, and the wrong ones are
 reviewed by hand. Known leniency: in text, the sign is ignored ("fell by 2.89 %" matches
@@ -35,7 +37,7 @@ _THOUSANDS = re.compile(r"\d{1,3}([.,]\d{3})+")
 
 
 class Grade(BaseModel):
-    correct: bool
+    correct: bool | None  # None: not graded automatically
     reason: str
 
 
@@ -109,7 +111,36 @@ def _grade_scalar(question: Question, run: AgentRun) -> Grade:
     return Grade(correct=False, reason=f"expected {expected!r} not found in answer or result")
 
 
+def stated_in_text(expected_row: list, text: str) -> bool:
+    """The row is spelled out in the answer: every name and every figure of it."""
+    numbers = numbers_in_text(text)
+    for value in expected_row:
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            if not any(close(abs(float(value)), n) for n in numbers):
+                return False
+        elif str(value).casefold() not in text.casefold():
+            return False
+    return True
+
+
 def _grade_rows(question: Question, run: AgentRun) -> Grade:
+    in_result = _grade_rows_in_result(question, run)
+    if in_result.correct or question.ordered:
+        return in_result
+    # The agent may answer from an earlier query and attach a different one. A name alone
+    # proves nothing ("Carrefour or Leclerc?" has both in any answer), so a figure is needed.
+    has_figures = all(
+        any(isinstance(v, int | float) for v in row) and any(isinstance(v, str) for v in row)
+        for row in question.expected
+    )
+    stated = all(stated_in_text(row, run.answer.answer) for row in question.expected)
+    # run.data: figures with no query behind them are not accepted.
+    if run.data and has_figures and stated:
+        return Grade(correct=True, reason="all expected rows are stated in the answer text")
+    return in_result
+
+
+def _grade_rows_in_result(question: Question, run: AgentRun) -> Grade:
     expected: list[list] = question.expected
     rows = run.data.rows if run.data else []
     positions = []
@@ -135,6 +166,8 @@ def grade(question: Question, run: AgentRun) -> Grade:
         if run.answer.answerable:
             return Grade(correct=False, reason="answered a question it should have refused")
         return Grade(correct=True, reason="refused")
+    if question.answer_type == "manual":
+        return Grade(correct=None, reason=f"manual review: {question.reason}")
     if run.error:
         return Grade(correct=False, reason="the run failed")
     if not run.answer.answerable:

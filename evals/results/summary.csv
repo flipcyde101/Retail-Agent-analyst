@@ -1,3 +1,5 @@
-run_id,date,model,prompt_version,questions,accuracy_pct,accuracy_answerable_pct,correct_refusals,refusal_questions,wrongly_refused,sql_valid_first_try_pct,failed_queries,runs_failed,input_tokens,output_tokens,cost_eur,cost_per_question_eur,latency_median_s,latency_p90_s,latency_max_s
-20261113-150305_claude-haiku-5-5_v1,2026-11-13,anthropic:claude-haiku-5-5,v1,50,90.0,87.5,10,10,3,85.7,7,0,439968,30968,0.0537,0.00107,5.5,9.9,21.2
-20261113-150931_claude-haiku-5-5_v1,2026-11-13,anthropic:claude-haiku-5-5,v1,50,98.0,97.5,10,10,1,84.1,7,0,436837,31943,0.0538,0.00108,5.9,8.8,16.2
+run_id,date,question_set,model,prompt_version,questions,manual_review,accuracy_pct,accuracy_answerable_pct,correct_refusals,refusal_questions,wrongly_refused,sql_valid_first_try_pct,failed_queries,runs_failed,input_tokens,output_tokens,cost_eur,cost_per_question_eur,latency_median_s,latency_p90_s,latency_max_s
+20261113-150305_claude-haiku-5-5_v1,2026-11-13,core,anthropic:claude-haiku-5-5,v1,50,0,90.0,87.5,10,10,3,85.7,7,0,439968,30968,0.0537,0.00107,5.5,9.9,21.2
+20261113-150931_claude-haiku-5-5_v1,2026-11-13,core,anthropic:claude-haiku-5-5,v1,50,0,98.0,97.5,10,10,1,84.1,7,0,436837,31943,0.0538,0.00108,5.9,8.8,16.2
+20261113-152115_natural_claude-haiku-5-5_v1,2026-11-13,natural,anthropic:claude-haiku-5-5,v1,22,0,86.4,83.3,4,4,0,90.5,4,0,264859,19555,0.0327,0.00149,5.4,10.7,21.7
+20261113-152549_natural_claude-haiku-5-5_v1,2026-11-13,natural,anthropic:claude-haiku-5-5,v1,20,2,100.0,100.0,4,4,0,84.2,5,0,236437,18835,0.0298,0.00135,5.7,13.0,17.0
