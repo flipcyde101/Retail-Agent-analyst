@@ -94,4 +94,15 @@ About the data:
 """,
 )
 
-PROMPTS = {"v1": V1, "v2": V2, "v3": V3}
+# v4 = v3 with the schema written into the instructions instead of fetched with a tool call.
+# The schema never changes between questions, so asking for it cost one model call per
+# question and bought nothing. agent.py appends the schema and hides describe_schema.
+_STEP_1 = "1. Call describe_schema first to see the tables, columns and their comments."
+assert _STEP_1 in V3
+V4 = V3.replace(
+    _STEP_1,
+    "1. Read the database schema at the end of these instructions: tables, columns and\n"
+    "   their comments.",
+)
+
+PROMPTS = {"v1": V1, "v2": V2, "v3": V3, "v4": V4}

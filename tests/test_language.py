@@ -24,3 +24,13 @@ def test_real_answers_are_recognised(text, language):
 @pytest.mark.parametrize("text", ["", "30805", "E.Leclerc", "Auchan 1.83"])
 def test_too_little_text_is_unknown_rather_than_a_guess(text):
     assert detect_language(text) == "unknown"
+
+
+def test_an_english_refusal_with_two_no_is_not_taken_for_spanish():
+    # Found in review: "no" was a Spanish marker, and a correct answer was sent back.
+    assert detect_language("No data exists for Spain; no rows.") != "es"
+    assert detect_language("No. There are no stores outside France.") == "en"
+
+
+def test_an_opening_question_mark_is_enough_for_spanish():
+    assert detect_language("¿Es más barato Mercadona o Carrefour?") == "es"

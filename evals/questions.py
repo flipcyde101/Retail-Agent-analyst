@@ -27,7 +27,7 @@ from pydantic import BaseModel, model_validator
 
 from agent import tools
 from agent.sql_guard import SqlValidationError
-from agent.tools import SqlExecutionError
+from agent.tools import DatabaseUnavailableError, SqlExecutionError
 
 QUESTIONS_PATH = Path(__file__).parent / "questions.yaml"
 QUESTION_SETS = {
@@ -44,7 +44,7 @@ HEADER = """\
 #
 # answer_type says how the runner compares the agent's result with `expected`:
 #   number   one figure, right if within 1 % of expected
-#   text     one value (a date, a name), right if equal
+#   text     one value (a date, a name), right if it is in the answer or tops the result
 #   rows     a small table; `ordered: true` means the order is part of the answer
 #   refusal  the agent must say it cannot answer (answerable = false)
 #   manual   not graded automatically: the right answer depends on the method (mean or
@@ -229,9 +229,12 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
 
     path = QUESTION_SETS[args.set_name]
-    questions = update(path, HEADERS[args.set_name]) if args.update else load_questions(path)
     per_category = PER_CATEGORY if args.set_name == "core" else None
-    problems = structure_problems(questions, per_category) + database_problems(questions)
+    try:
+        questions = update(path, HEADERS[args.set_name]) if args.update else load_questions(path)
+        problems = structure_problems(questions, per_category) + database_problems(questions)
+    except DatabaseUnavailableError as error:
+        sys.exit(f"{error}\nIs the database running? (docker compose up -d)")
     for problem in problems:
         print(problem)
     if problems:

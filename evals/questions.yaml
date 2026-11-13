@@ -2,7 +2,7 @@
 #
 # answer_type says how the runner compares the agent's result with `expected`:
 #   number   one figure, right if within 1 % of expected
-#   text     one value (a date, a name), right if equal
+#   text     one value (a date, a name), right if it is in the answer or tops the result
 #   rows     a small table; `ordered: true` means the order is part of the answer
 #   refusal  the agent must say it cannot answer (answerable = false)
 #   manual   not graded automatically: the right answer depends on the method (mean or

@@ -2,13 +2,13 @@
 
 Pure functions: no model, no database. The rules, by answer_type:
 
-  number   the expected figure (within 1 %) is in the agent's answer text, or in the first
-           row of the result of its query
+  number   the expected figure (within 1 %; exact if it is a year) is in the agent's answer
+           text, or in the first row of the result of its query
   text     the expected value is in the answer text, or in the first row of the result
   rows     every expected row is found in the result of the agent's query; if the question
            is ordered, in the same order; if a single row is expected ("which chain is the
            cheapest?"), it must be the first row of the agent's result. Failing that, an
-           unordered answer is right if the text states every name with its figure
+           unordered answer is right if the text states every name next to its own figure
   refusal  the agent said answerable = false, by itself (a run that crashed is not a refusal)
   manual   no verdict (correct = None): a person reads the answer
 
@@ -32,7 +32,9 @@ RELATIVE_TOLERANCE = 0.01
 # Lets 0.46 match 0.4586: the reference answers are rounded to two decimals.
 ABSOLUTE_TOLERANCE = 0.005
 
-_NUMBER = re.compile(r"\d[\d.,   ]*\d|\d")
+# A space (plain, no-break or narrow) separates thousands only when exactly three digits
+# follow it: "44 736" is one number, "In 2025, 30,805 prices" is two.
+_NUMBER = re.compile(r"\d{1,3}(?:[ \u00a0\u202f\u2009]\d{3})+(?![\d])(?:[.,]\d+)?|\d+(?:[.,]\d+)*")
 _THOUSANDS = re.compile(r"\d{1,3}([.,]\d{3})+")
 
 
@@ -45,34 +47,56 @@ def close(a: float, b: float) -> bool:
     return math.isclose(a, b, rel_tol=RELATIVE_TOLERANCE, abs_tol=ABSOLUTE_TOLERANCE)
 
 
+def number_matches(expected: int | float, value: float) -> bool:
+    """Within 1 %, except for a year: 1 % of 2024 is twenty years, so a year must be exact."""
+    if isinstance(expected, int) and 1900 <= expected <= 2100:
+        return value == expected
+    return close(float(expected), value)
+
+
+_SPACES = re.compile(r"[ \u00a0\u202f\u2009]")
+
+
+def _readings(token: str) -> list[float]:
+    """The numbers one written token can mean: "1.234" is 1234 or 1.234."""
+    joined = _SPACES.sub("", token)
+    found: list[float] = []
+    if joined != token:
+        # "5 100 g packs" may be 5,100 or a 5 followed by 100: keep the parts as well.
+        found.extend(n for part in _SPACES.split(token) for n in _readings(part))
+    readings = set()
+    if "," in joined and "." in joined:
+        decimal_mark = max(",", ".", key=joined.rfind)
+        thousands_mark = "," if decimal_mark == "." else "."
+        readings.add(joined.replace(thousands_mark, "").replace(decimal_mark, "."))
+    elif "," in joined or "." in joined:
+        mark = "," if "," in joined else "."
+        if _THOUSANDS.fullmatch(joined):
+            readings.add(joined.replace(mark, ""))
+        if joined.count(mark) == 1:
+            readings.add(joined.replace(mark, "."))
+    else:
+        readings.add(joined)
+    for reading in sorted(readings):
+        try:
+            found.append(float(reading))
+        except ValueError:
+            continue
+    return found
+
+
+def numbers_with_positions(text: str) -> list[tuple[int, list[float]]]:
+    """Where each written figure starts, with the numbers it can mean."""
+    return [(match.start(), _readings(match.group())) for match in _NUMBER.finditer(text)]
+
+
 def numbers_in_text(text: str) -> list[float]:
     """Every figure written in a sentence, as a non-negative number.
 
     "30,805", "30 805" and "30.805" are all thirty thousand; "2,76" is 2.76. When a token
     is ambiguous ("1.234" can be one thousand or one point two), both readings are returned.
     """
-    found: list[float] = []
-    for match in _NUMBER.finditer(text):
-        token = re.sub(r"[   ]", "", match.group()).rstrip(".,")
-        readings = set()
-        if "," in token and "." in token:
-            decimal_mark = max(",", ".", key=token.rfind)
-            thousands_mark = "," if decimal_mark == "." else "."
-            readings.add(token.replace(thousands_mark, "").replace(decimal_mark, "."))
-        elif "," in token or "." in token:
-            mark = "," if "," in token else "."
-            if _THOUSANDS.fullmatch(token):
-                readings.add(token.replace(mark, ""))
-            if token.count(mark) == 1:
-                readings.add(token.replace(mark, "."))
-        else:
-            readings.add(token)
-        for reading in readings:
-            try:
-                found.append(float(reading))
-            except ValueError:
-                continue
-    return found
+    return [number for _, readings in numbers_with_positions(text) for number in readings]
 
 
 def cell_matches(expected: Any, cell: Any) -> bool:
@@ -83,9 +107,9 @@ def cell_matches(expected: Any, cell: Any) -> bool:
         if isinstance(cell, date):  # a year asked for, a date returned
             return expected == cell.year
         if isinstance(cell, int | float | Decimal):
-            return close(float(expected), float(cell))
+            return number_matches(expected, float(cell))
         try:
-            return close(float(expected), float(str(cell)))
+            return number_matches(expected, float(str(cell)))
         except ValueError:
             return False
     # Text: 'Auchan' matches 'auchan'; '2026-02' matches the date 2026-02-01.
@@ -104,21 +128,67 @@ def _grade_scalar(question: Question, run: AgentRun) -> Grade:
     if rows and row_matches([expected], rows[0]):
         return Grade(correct=True, reason="expected value is in the first row of the result")
     if question.answer_type == "number":
-        if any(close(abs(float(expected)), n) for n in numbers_in_text(run.answer.answer)):
+        if any(number_matches(abs(expected), n) for n in numbers_in_text(run.answer.answer)):
             return Grade(correct=True, reason="expected value is in the answer text")
     elif str(expected).casefold() in run.answer.answer.casefold():
         return Grade(correct=True, reason="expected value is in the answer text")
     return Grade(correct=False, reason=f"expected {expected!r} not found in answer or result")
 
 
-def stated_in_text(expected_row: list, text: str) -> bool:
-    """The row is spelled out in the answer: every name and every figure of it."""
-    numbers = numbers_in_text(text)
-    for value in expected_row:
-        if isinstance(value, int | float) and not isinstance(value, bool):
-            if not any(close(abs(float(value)), n) for n in numbers):
-                return False
-        elif str(value).casefold() not in text.casefold():
+def _name_of(row: list) -> str:
+    return next(str(v) for v in row if isinstance(v, str)).casefold()
+
+
+def _position_of_figures(row: list, piece: str) -> int | None:
+    """Where the row's first figure is in the piece, if all its figures are there."""
+    numbers = numbers_with_positions(piece)
+    positions = []
+    for value in row:
+        if isinstance(value, str):
+            continue
+        where = [
+            start
+            for start, readings in numbers
+            if any(number_matches(abs(value), n) for n in readings)
+        ]
+        if not where:
+            return None
+        positions.append(where[0])
+    return min(positions) if positions else None
+
+
+def rows_stated_in_text(expected: list[list], text: str) -> bool:
+    """Every row is in the text, each figure next to its own name.
+
+    The text is cut at the first mention of each expected name. The figures of a row must
+    sit in the piece right after its name ("Carrefour 24.94 and E.Leclerc 19.17") or in the
+    piece right before it ("19.17 at E.Leclerc"). When two names share the piece between
+    them ("Monoprix 4.88 versus 2.51 for Lidl"), the figure of the first name must come
+    first. Both names and both figures somewhere in the text is not enough: they could be
+    swapped.
+    """
+    folded = text.casefold()
+    by_position = sorted(expected, key=lambda row: folded.find(_name_of(row)))
+    starts = [folded.find(_name_of(row)) for row in by_position]
+    if any(start < 0 for start in starts):
+        return False
+    ends = [start + len(_name_of(row)) for start, row in zip(starts, by_position, strict=True)]
+    # pieces[i] is the text before name i; pieces[i + 1] is the text after it.
+    cuts = [0, *ends]
+    pieces = [text[cut:start] for cut, start in zip(cuts, [*starts, len(text)], strict=True)]
+
+    previous_after: int | None = None  # where the previous name's figure is, if it follows it
+    for index, row in enumerate(by_position):
+        before = _position_of_figures(row, pieces[index])
+        after = _position_of_figures(row, pieces[index + 1])
+        # The piece before this name is the piece after the previous one: no crossing.
+        if before is not None and previous_after is not None and before <= previous_after:
+            before = None
+        if before is not None:
+            previous_after = None
+        elif after is not None:
+            previous_after = after
+        else:
             return False
     return True
 
@@ -133,7 +203,7 @@ def _grade_rows(question: Question, run: AgentRun) -> Grade:
         any(isinstance(v, int | float) for v in row) and any(isinstance(v, str) for v in row)
         for row in question.expected
     )
-    stated = all(stated_in_text(row, run.answer.answer) for row in question.expected)
+    stated = has_figures and rows_stated_in_text(question.expected, run.answer.answer)
     # run.data: figures with no query behind them are not accepted.
     if run.data and has_figures and stated:
         return Grade(correct=True, reason="all expected rows are stated in the answer text")

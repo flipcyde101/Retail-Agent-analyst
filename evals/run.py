@@ -1,4 +1,4 @@
-"""Run the 50 questions through the agent, grade them and write the results.
+"""Run a question set through the agent, grade the answers and write the results.
 
 Usage:
     uv run python -m evals.run                       # all questions, model from .env
@@ -17,6 +17,7 @@ import csv
 import json
 import statistics
 import sys
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -24,9 +25,10 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from agent.agent import PROMPT_VERSION, AgentRun, ask, default_model
+from agent.agent import PROMPT_VERSION, AgentRun, ask, default_model, warm_up
 from agent.language import detect_language
 from agent.prompts import PROMPTS
+from agent.tools import DatabaseUnavailableError, describe_schema
 from evals.grading import grade
 from evals.questions import QUESTION_SETS, Question, load_questions
 
@@ -135,6 +137,7 @@ def evaluate_one(
         "language": question.language,
         "answer_type": question.answer_type,
     }
+    started = time.perf_counter()
     try:
         run = ask_fn(question.question, model, prompt_version)
     except Exception as error:  # noqa: BLE001 - one broken question must not stop the other 49
@@ -154,7 +157,7 @@ def evaluate_one(
             input_tokens=0,
             output_tokens=0,
             cost_eur=None,
-            seconds=0.0,
+            seconds=round(time.perf_counter() - started, 2),
             error=f"{type(error).__name__}: {error}",
             sql=None,
             answer="",
@@ -193,6 +196,16 @@ def evaluate_one(
 
 def _pct(part: int, whole: int) -> float:
     return round(100 * part / whole, 1) if whole else 0.0
+
+
+def percentile(ordered: list[float], pct: int) -> float:
+    """Nearest rank: the smallest value with at least pct % of the values at or below it.
+
+    With 50 values the 90th percentile is the 45th. Integer arithmetic, so that 0.9 * 70
+    being 63.00000000000001 cannot push the rank up by one.
+    """
+    rank = -(-pct * len(ordered) // 100)  # ceiling of pct * n / 100
+    return ordered[max(rank, 1) - 1]
 
 
 def summarise(results: list[QuestionResult]) -> Summary:
@@ -235,7 +248,7 @@ def summarise(results: list[QuestionResult]) -> Summary:
             None if total_cost is None else round(total_cost / len(everything), 5)
         ),
         latency_median_s=round(statistics.median(seconds), 1),
-        latency_p90_s=round(seconds[min(len(seconds) - 1, int(0.9 * len(seconds)))], 1),
+        latency_p90_s=round(percentile(seconds, 90), 1),
         latency_max_s=round(seconds[-1], 1),
     )
 
@@ -321,6 +334,15 @@ def main() -> None:
         if not questions:
             sys.exit("No question has any of those ids.")
 
+    # Loading the model client takes several seconds once per process. Without this the
+    # first question carried that time and looked like a slow answer.
+    started = time.perf_counter()
+    try:
+        describe_schema()  # fail now, not fifty times, if the database is not running
+        warm_up(model, args.prompt)
+    except DatabaseUnavailableError as error:
+        sys.exit(f"{error}\nIs the database running? (docker compose up -d)")
+    print(f"start-up {time.perf_counter() - started:.1f}s (not counted in the latency)\n")
     results = run_all(
         questions, model, args.workers, question_set=args.set_name, prompt_version=args.prompt
     )

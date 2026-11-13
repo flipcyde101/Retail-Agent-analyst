@@ -8,7 +8,8 @@ Usage:
 import argparse
 import sys
 
-from agent.agent import AgentRun, ask
+from agent.agent import PROMPT_VERSION, AgentRun, ask
+from agent.prompts import PROMPTS
 
 MAX_ROWS_SHOWN = 15
 
@@ -52,12 +53,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ask the retail analyst agent a question.")
     parser.add_argument("question")
     parser.add_argument("--model", help="provider:model, overrides LLM_MODEL from .env")
+    parser.add_argument("--prompt", choices=sorted(PROMPTS), default=PROMPT_VERSION)
     args = parser.parse_args()
 
     # Windows terminals default to a legacy encoding; product names have accents.
     sys.stdout.reconfigure(encoding="utf-8")
     try:
-        run = ask(args.question, args.model)
+        run = ask(args.question, args.model, args.prompt)
     except RuntimeError as error:  # missing LLM_MODEL: a setup problem, not a crash
         sys.exit(str(error))
     print(render(run))

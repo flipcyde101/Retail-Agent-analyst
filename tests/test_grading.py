@@ -7,7 +7,7 @@ import pytest
 
 from agent.agent import AgentAnswer, AgentRun
 from agent.models import SqlResult
-from evals.grading import cell_matches, grade, numbers_in_text
+from evals.grading import cell_matches, grade, numbers_in_text, rows_stated_in_text
 from evals.questions import Question
 
 
@@ -65,6 +65,42 @@ def run(text="", rows=None, answerable=True, error=None) -> AgentRun:
 )
 def test_numbers_are_read_in_english_and_spanish_formats(text, expected):
     assert expected in numbers_in_text(text)
+
+
+def test_a_year_before_a_figure_does_not_swallow_it():
+    # Found reviewing the grader: "2025, 30,805" was read as one token and the figure lost.
+    assert {2025.0, 30805.0} <= set(numbers_in_text("In 2025, 30,805 prices were recorded"))
+    assert {2025.0, 44736.0} <= set(numbers_in_text("En 2025, 44 736 precios"))
+    assert numbers_in_text("in 2025 12 stores") == [2025.0, 12.0]
+
+
+def test_two_numbers_separated_by_a_space_are_read_both_ways():
+    # "5 100" is 5,100 in French and a 5 followed by a 100 in "the top 5 100 g packs".
+    assert {5100.0, 5.0, 100.0} <= set(numbers_in_text("the top 5 100 g packs"))
+    assert 44736.0 in numbers_in_text("44\u2009736 prix")  # thin space
+
+
+def test_a_year_must_be_exact_but_other_figures_have_one_percent():
+    # Found in review: 1 % of 2024 is twenty years, so "2023" passed for 2024.
+    assert cell_matches(2024, 2024)
+    assert not cell_matches(2024, 2023)
+    assert not cell_matches(2024, Decimal("2025"))
+    assert cell_matches(30805, 30900)
+    year = question(expected=2024)
+    assert not grade(year, run("The first year is 2023.")).correct
+    assert grade(year, run("The first year is 2024.")).correct
+
+
+def test_figures_in_the_text_must_go_with_their_own_name():
+    expected = [["Carrefour", 24.94], ["E.Leclerc", 19.17]]
+    assert rows_stated_in_text(expected, "Carrefour averages 24.94 and E.Leclerc 19.17 EUR/kg.")
+    assert rows_stated_in_text(expected, "19.17 EUR/kg at E.Leclerc against 24.94 at Carrefour.")
+    assert not rows_stated_in_text(expected, "Carrefour averages 19.17 and E.Leclerc 24.94.")
+    assert not rows_stated_in_text(expected, "Carrefour averages 24.94 EUR/kg.")
+    # A real answer (N14): one figure after its name, the other before its name.
+    real = "Yes. Monoprix averages 4.88 (5,763 observations) versus 2.51 for Lidl (1,287)."
+    assert rows_stated_in_text([["Lidl", 2.51], ["Monoprix", 4.88]], real)
+    assert not rows_stated_in_text([["Lidl", 4.88], ["Monoprix", 2.51]], real)
 
 
 def test_an_ambiguous_token_gives_both_readings():

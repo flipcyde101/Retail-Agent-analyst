@@ -7,7 +7,7 @@ import pytest
 from agent.agent import AgentAnswer, AgentRun, SqlAttempt
 from agent.models import SqlResult
 from evals.questions import Question
-from evals.run import cost_eur, evaluate_one, run_all, summarise, write_csv
+from evals.run import cost_eur, evaluate_one, percentile, run_all, summarise, write_csv
 
 MODEL = "anthropic:claude-haiku-5-5"
 
@@ -102,6 +102,14 @@ def test_the_summary_adds_up():
     assert summary.runs_failed == 1
     assert summary.cost_eur is None  # one question has no cost, so the total is not known
     assert summary.latency_max_s == 10.0
+
+
+def test_the_90th_percentile_is_the_nearest_rank():
+    # Found reviewing the runner: it took the 46th of 50 values, which is the 92nd percentile.
+    assert percentile([float(n) for n in range(1, 51)], 90) == 45.0
+    assert percentile([float(n) for n in range(1, 23)], 90) == 20.0
+    assert percentile([float(n) for n in range(1, 71)], 90) == 63.0
+    assert percentile([3.0], 90) == 3.0
 
 
 def test_results_are_written_and_the_summary_file_is_appended(tmp_path):

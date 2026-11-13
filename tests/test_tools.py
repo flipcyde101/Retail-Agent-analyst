@@ -76,7 +76,8 @@ def test_run_sql_reports_postgres_errors_with_their_message():
 
 def test_run_sql_cancels_slow_queries():
     with pytest.raises(SqlExecutionError, match="timeout"):
-        run_sql("SELECT pg_sleep(2) LIMIT 1", timeout_ms=200)
+        # 185,337 x 185,337 rows to count: far more than 200 ms of work.
+        run_sql("SELECT count(*) FROM prices a, prices b LIMIT 1", timeout_ms=200)
 
 
 def test_run_sql_cannot_write_even_if_validation_is_bypassed(monkeypatch):
@@ -84,3 +85,24 @@ def test_run_sql_cannot_write_even_if_validation_is_bypassed(monkeypatch):
     monkeypatch.setattr("agent.tools.validate_sql", lambda query: query)
     with pytest.raises(SqlExecutionError):
         run_sql("DELETE FROM prices")
+
+
+# --- limits on what comes back -----------------------------------------------------
+
+
+def test_run_sql_refuses_a_result_too_large_to_send_to_a_model():
+    # One row, but the whole products table inside it: the row limit does not catch this.
+    with pytest.raises(SqlExecutionError, match="too large"):
+        run_sql("SELECT string_agg(name, ',') FROM products LIMIT 1")
+
+
+def test_run_sql_caps_the_rows_itself_if_the_validator_lets_too_many_through(monkeypatch):
+    monkeypatch.setattr("agent.tools.validate_sql", lambda query: query)
+    with pytest.raises(SqlExecutionError, match="more than 200 rows"):
+        run_sql("SELECT id FROM prices")
+
+
+def test_run_sql_turns_unusual_types_into_text_instead_of_failing_later():
+    result = run_sql("SELECT int4range(1, 5), interval '2 days' LIMIT 1")
+    assert result.rows == [["[1, 5)", "2 days, 0:00:00"]]
+    assert result.model_dump_json()

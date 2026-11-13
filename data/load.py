@@ -133,7 +133,9 @@ def clean_prices(locations: dict, products: dict) -> tuple[list[tuple], Counter]
 
 def connect() -> psycopg.Connection:
     return psycopg.connect(
-        host="localhost",
+        # 127.0.0.1 and not "localhost": that name tries IPv6 first, where the container
+        # does not listen, and every connection would wait for that attempt to time out.
+        host=os.environ.get("POSTGRES_HOST", "127.0.0.1"),
         port=os.environ.get("POSTGRES_PORT", "5432"),
         dbname=os.environ["POSTGRES_DB"],
         user=os.environ["POSTGRES_USER"],
@@ -148,6 +150,23 @@ def copy_rows(cur: psycopg.Cursor, table: str, columns: list[str], rows) -> None
     with cur.copy(statement) as copy:
         for row in rows:
             copy.write_row(row)
+
+
+# LIKE patterns of built-in functions revoked from PUBLIC (\\_ is a literal underscore).
+UNNEEDED_FUNCTIONS = [
+    "pg\\_terminate\\_backend",
+    "pg\\_cancel\\_backend",
+    "pg\\_sleep%",
+    "pg\\_advisory%",
+    "pg\\_try\\_advisory%",
+    "pg\\_notify",
+    "query\\_to\\_xml%",
+    "cursor\\_to\\_xml%",
+    "table\\_to\\_xml%",
+    "schema\\_to\\_xml%",
+    "database\\_to\\_xml%",
+    "lo\\_%",
+]
 
 
 def create_readonly_role(cur: psycopg.Cursor) -> None:
@@ -169,6 +188,20 @@ def create_readonly_role(cur: psycopg.Cursor) -> None:
     cur.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}").format(role))
     cur.execute(sql.SQL("ALTER ROLE {} SET default_transaction_read_only = on").format(role))
     cur.execute(sql.SQL("ALTER ROLE {} SET statement_timeout = '5s'").format(role))
+
+    # By default every role may call these. A reader has no use for them, and on a shared
+    # demo they let one user kill another's query (pg_terminate_backend), run SQL the
+    # validator never sees (query_to_xml), hold locks or sleep. The validator rejects them
+    # too; this is the barrier that still stands if the validator has a bug.
+    cur.execute(
+        "SELECT oid::regprocedure::text FROM pg_proc "
+        "WHERE pronamespace = 'pg_catalog'::regnamespace AND proname LIKE ANY(%s)",
+        (UNNEEDED_FUNCTIONS,),
+    )
+    for (signature,) in cur.fetchall():
+        # The signature comes from the catalog, already quoted by regprocedure.
+        cur.execute(sql.SQL("REVOKE EXECUTE ON FUNCTION {} FROM PUBLIC").format(sql.SQL(signature)))
+    cur.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(database))
 
 
 def main() -> None:

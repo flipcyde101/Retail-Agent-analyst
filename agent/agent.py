@@ -9,13 +9,15 @@ which it validates against AgentAnswer. We write the tools, the instructions and
 import os
 import time
 from dataclasses import dataclass, field
+from functools import cache, lru_cache
 from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.models import Model
+from pydantic_ai.models import Model, infer_model
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from agent import tools
@@ -24,14 +26,16 @@ from agent.language import NAMES, detect_language
 from agent.models import SchemaDescription, SqlResult
 from agent.prompts import PROMPTS
 from agent.sql_guard import SqlValidationError
-from agent.tools import SqlExecutionError
+from agent.tools import DatabaseUnavailableError, SqlExecutionError
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 # Versions that also get the checks added on day 7 (SQL clean-up, no refusal before looking
 # at the schema, no empty answer). v1 runs exactly as it was first measured.
 STRICT_VERSIONS = frozenset(PROMPTS) - {"v1"}
 # Versions where the code, not only the prompt, takes care of the answer's language.
 LANGUAGE_VERSIONS = frozenset(PROMPTS) - {"v1", "v2"}
+# Versions that get the schema inside the instructions and have no describe_schema tool.
+INLINE_SCHEMA_VERSIONS = frozenset(PROMPTS) - {"v1", "v2", "v3"}
 # The stricter checks send more answers back, so they need more room than the default of 1.
 STRICT_OUTPUT_RETRIES = 3
 
@@ -80,9 +84,17 @@ class RunState:
     attempts: list[SqlAttempt] = field(default_factory=list)
     results: dict[str, SqlResult] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.inline_schema:
+            self.schema_seen = True
+
     @property
     def strict(self) -> bool:
         return self.prompt_version in STRICT_VERSIONS
+
+    @property
+    def inline_schema(self) -> bool:
+        return self.prompt_version in INLINE_SCHEMA_VERSIONS
 
     @property
     def required_language(self) -> str | None:
@@ -123,6 +135,29 @@ def strip_json_debris(sql: str) -> str:
     return sql.rstrip().rstrip('"}').rstrip()
 
 
+@lru_cache(maxsize=1)
+def schema_text() -> str:
+    """The schema as plain text for the instructions, read from the database once.
+
+    Text and not JSON: the same tables, columns and comments in fewer tokens. Cached for
+    the life of the process, because the schema only changes when the data is reloaded.
+    """
+    lines = []
+    for table in tools.describe_schema().tables:
+        comment = f": {table.comment}" if table.comment else ""
+        lines.append(f"\n{table.kind} {table.name}{comment}")
+        for column in table.columns:
+            comment = f"  -- {column.comment}" if column.comment else ""
+            lines.append(f"  {column.name} {column.type}{comment}")
+    return "\n".join(lines).strip()
+
+
+FALLBACK_ANSWERS = {
+    "en": "The agent could not produce a reliable answer to this question.",
+    "es": "El agente no ha podido dar una respuesta fiable a esta pregunta.",
+    "fr": "L'agent n'a pas pu donner une réponse fiable à cette question.",
+}
+
 # defer_model_check: importing this file must not require an API key (tests, CI).
 agent = Agent(output_type=AgentAnswer, deps_type=RunState, defer_model_check=True)
 
@@ -130,6 +165,8 @@ agent = Agent(output_type=AgentAnswer, deps_type=RunState, defer_model_check=Tru
 @agent.instructions
 def instructions(ctx: RunContext[RunState]) -> str:
     text = PROMPTS[ctx.deps.prompt_version]
+    if ctx.deps.inline_schema:
+        text += f"\nDatabase schema:\n{schema_text()}\n"
     language = ctx.deps.required_language
     if language:
         # Telling the model beats asking it to work it out: with the prompt rule alone (v2)
@@ -138,7 +175,14 @@ def instructions(ctx: RunContext[RunState]) -> str:
     return text
 
 
-@agent.tool
+async def _only_without_inline_schema(
+    ctx: RunContext[RunState], definition: ToolDefinition
+) -> ToolDefinition | None:
+    # Returning None hides the tool from the model for this run.
+    return None if ctx.deps.inline_schema else definition
+
+
+@agent.tool(prepare=_only_without_inline_schema)
 def describe_schema(ctx: RunContext[RunState]) -> SchemaDescription:
     """List the tables and views with their columns, types and comments. Call this first."""
     ctx.deps.schema_seen = True
@@ -213,16 +257,45 @@ def default_model() -> str:
         ) from None
 
 
+@cache
+def _client(model_name: str) -> Model:
+    """The model object for a 'provider:model' name, built once per process.
+
+    Building it imports the provider's SDK, which took about 17 s on the first call when
+    measured: it was the one question per run that went over 15 s. Keeping the object also
+    keeps its HTTP connection open between questions.
+    """
+    return infer_model(model_name)
+
+
+def warm_up(model: str | None = None, prompt_version: str = PROMPT_VERSION) -> None:
+    """Pay the start-up costs now, so the first question is as fast as the others.
+
+    Call it when the process starts (the demo, the evaluation): it loads the model client
+    and, for the versions that carry the schema in the instructions, reads the schema.
+    """
+    load_dotenv(ROOT / ".env")
+    _client(model or default_model())
+    if prompt_version in INLINE_SCHEMA_VERSIONS:
+        schema_text()
+
+
 def ask(
     question: str, model: Model | str | None = None, prompt_version: str = PROMPT_VERSION
 ) -> AgentRun:
-    """Answer one question. Never raises for a model that gives up: it reports it instead."""
+    """Answer one question.
+
+    Never raises for a model that gives up or a database that is down: the run comes back
+    with `error` set and an answer that says so. An error of the model API still raises.
+    """
     if prompt_version not in PROMPTS:
         raise ValueError(f"Unknown prompt version {prompt_version!r}; have {sorted(PROMPTS)}")
     # The API key lives in .env too, and it is needed whichever way the model was chosen.
     load_dotenv(ROOT / ".env")
     model = model or default_model()
     model_name = model if isinstance(model, str) else model.model_name
+    if isinstance(model, str):
+        model = _client(model)
     state = RunState(prompt_version=prompt_version, question_language=detect_language(question))
     started = time.perf_counter()
     # Our own counter, so tokens are still known when the run ends in an exception.
@@ -239,12 +312,13 @@ def ask(
             retries={"output": STRICT_OUTPUT_RETRIES} if state.strict else None,
         )
         answer = result.output
-    except (UnexpectedModelBehavior, UsageLimitExceeded) as failure:
-        # Three failed queries in a row, or too many steps: stop and say so honestly.
+    except (UnexpectedModelBehavior, UsageLimitExceeded, DatabaseUnavailableError) as failure:
+        # Three failed queries in a row, too many steps, or no database: stop and say so
+        # honestly, in the language of the question when it is known.
         error = f"{type(failure).__name__}: {failure}"
         answer = AgentAnswer(
             answerable=False,
-            answer="The agent could not produce a reliable answer to this question.",
+            answer=FALLBACK_ANSWERS[state.required_language or "en"],
             chart="none",
             confidence="low",
         )

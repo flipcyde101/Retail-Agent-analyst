@@ -13,7 +13,9 @@ def connect() -> psycopg.Connection:
     """Open a connection as the read-only role created by data/load.py."""
     load_dotenv(ROOT / ".env")
     return psycopg.connect(
-        host=os.environ.get("POSTGRES_HOST", "localhost"),
+        # 127.0.0.1 and not "localhost": that name tries IPv6 first, where the container
+        # does not listen, and every connection would wait for that attempt to time out.
+        host=os.environ.get("POSTGRES_HOST", "127.0.0.1"),
         port=os.environ.get("POSTGRES_PORT", "5432"),
         dbname=os.environ["POSTGRES_DB"],
         user=os.environ["AGENT_DB_USER"],

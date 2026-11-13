@@ -100,3 +100,68 @@ def test_rejects_text_that_is_not_sql(query):
 def test_the_error_tells_the_model_how_to_fix_a_missing_limit():
     with pytest.raises(SqlValidationError, match=r"(?i)limit"):
         validate_sql("SELECT * FROM prices")
+
+
+# --- found by trying to break it: a read-only SELECT can still do harm ---------------
+
+
+def test_rejects_a_nul_byte_that_hides_the_limit_from_the_server():
+    # sqlglot reads past the NUL and sees the LIMIT; PostgreSQL stops at it and runs
+    # "SELECT id FROM prices --", which returned the whole table.
+    with pytest.raises(SqlValidationError, match="NUL"):
+        validate_sql("SELECT id FROM prices --\x00\nLIMIT 5")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT usename, query FROM pg_stat_activity LIMIT 20",
+        "SELECT name, setting FROM pg_settings LIMIT 20",
+        "SELECT table_name FROM information_schema.tables LIMIT 20",
+        "SELECT * FROM other_schema.prices LIMIT 5",
+        "SELECT * FROM (SELECT rolname FROM pg_roles) r LIMIT 5",
+    ],
+)
+def test_rejects_tables_that_are_not_part_of_the_project(query):
+    with pytest.raises(SqlValidationError, match="not available"):
+        validate_sql(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT pg_terminate_backend(123) LIMIT 1",
+        "SELECT pg_catalog.pg_sleep(60) LIMIT 1",
+        'SELECT "pg_sleep"(60) LIMIT 1',
+        "SELECT query_to_xml('SELECT * FROM prices', true, false, '') LIMIT 1",
+        "SELECT set_config('statement_timeout', '0', false) LIMIT 1",
+        "SELECT repeat('x', 500000000) LIMIT 1",
+        "SELECT lpad('x', 500000000) LIMIT 1",
+        "SELECT lo_import('/etc/passwd') LIMIT 1",
+    ],
+)
+def test_rejects_functions_that_act_on_the_server(query):
+    with pytest.raises(SqlValidationError, match="not allowed"):
+        validate_sql(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT name FROM products LIMIT 10; -- ten of them",
+        "SELECT name FROM products LIMIT 10; /* done */",
+        "WITH t AS (SELECT chain FROM locations) SELECT * FROM t LIMIT 5",
+        "SELECT * FROM public.prices LIMIT 5",
+        "SELECT tag, count(*) FROM products, unnest(categories) AS tag GROUP BY tag LIMIT 5",
+        "SELECT d FROM generate_series(1, 12) AS d LIMIT 12",
+        "SELECT date_trunc('month', date), round(avg(price)::numeric, 2) FROM prices "
+        "GROUP BY 1 LIMIT 5",
+    ],
+)
+def test_accepts_ordinary_analysis_queries(query):
+    assert validate_sql(query)
+
+
+def test_fetch_first_gets_a_message_that_says_what_to_write():
+    with pytest.raises(SqlValidationError, match="instead of FETCH FIRST"):
+        validate_sql("SELECT name FROM products FETCH FIRST 10 ROWS ONLY")

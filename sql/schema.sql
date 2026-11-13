@@ -1,5 +1,6 @@
 -- Tables for the retail analyst agent. Re-runnable: drops and recreates everything.
--- The COMMENTs are not decoration: describe_schema (day 3) will show them to the model.
+-- The COMMENTs are not decoration: the agent reads them (describe_schema, and the schema
+-- written into its instructions) to know what each column means.
 
 DROP VIEW IF EXISTS v_price_per_unit;
 DROP TABLE IF EXISTS prices;

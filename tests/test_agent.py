@@ -69,9 +69,8 @@ def answer(**overrides) -> tuple:
 
 
 def test_happy_path_returns_the_answer_with_the_rows_of_its_query():
-    run = ask(
-        "Which chain is cheapest?", scripted_model(("describe",), ("sql", GOOD_SQL), answer())
-    )
+    steps = scripted_model(("describe",), ("sql", GOOD_SQL), answer())
+    run = ask("Which chain is cheapest?", steps, prompt_version="v3")
 
     assert run.answer.answerable
     assert run.answer.sql == GOOD_SQL
@@ -138,7 +137,7 @@ def test_the_sql_of_the_answer_matches_ignoring_whitespace_and_semicolon():
 
 def test_an_unanswerable_question_has_no_sql_and_no_data():
     refusal = answer(answerable=False, answer="There is no data for Spain.", sql=None, chart="none")
-    run = ask("Cheapest chain in Spain?", scripted_model(("describe",), refusal))
+    run = ask("Cheapest chain in Spain?", scripted_model(("describe",), refusal), "v3")
 
     assert not run.answer.answerable
     assert run.answer.sql is None
@@ -169,8 +168,9 @@ def test_v1_still_fails_on_the_stray_characters_as_first_measured():
     assert run.prompt_version == "v1"
 
 
-def test_v2_rejects_a_refusal_made_before_looking_at_the_database():
-    run = ask("Cheapest chain in Spain?", scripted_model(REFUSAL, ("describe",), REFUSAL))
+def test_v2_and_v3_reject_a_refusal_made_before_looking_at_the_database():
+    steps = scripted_model(REFUSAL, ("describe",), REFUSAL)
+    run = ask("Cheapest chain in Spain?", steps, prompt_version="v3")
 
     assert run.requests == 3  # the first refusal was sent back
     assert not run.answer.answerable
@@ -249,6 +249,66 @@ def test_each_version_sends_its_own_instructions():
 
     assert "Language:" not in seen[0]
     assert "retail price analyst" in seen[0]
+
+
+# --- v4: the schema is in the instructions, so no model call is spent fetching it ---
+
+
+def test_v4_puts_the_schema_in_the_instructions_and_hides_the_tool():
+    seen = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append((info.instructions, [tool.name for tool in info.function_tools]))
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, REFUSAL[1])])
+
+    run = ask("Cheapest chain in Spain?", FunctionModel(respond), prompt_version="v4")
+
+    instructions, tool_names = seen[0]
+    assert "table prices" in instructions
+    assert "price numeric" in instructions
+    assert tool_names == ["run_sql"]
+    # The schema was in front of the model, so a refusal with no tool call is accepted.
+    assert run.requests == 1
+    assert run.error is None
+
+
+def test_v3_still_offers_describe_schema_and_keeps_the_schema_out_of_the_instructions():
+    seen = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append((info.instructions, [tool.name for tool in info.function_tools]))
+        return ModelResponse(parts=[ToolCallPart("describe_schema", {})])
+
+    ask("Anything at all?", FunctionModel(respond), prompt_version="v3")
+
+    instructions, tool_names = seen[0]
+    assert "Database schema:" not in instructions
+    assert sorted(tool_names) == ["describe_schema", "run_sql"]
+
+
+# --- a database that is down, and the language of the fallback answer ---
+
+
+def test_a_database_that_is_down_ends_the_run_at_once_instead_of_being_retried(monkeypatch):
+    def unreachable(query: str) -> SqlResult:
+        raise tools.DatabaseUnavailableError("Cannot connect to the database: refused")
+
+    monkeypatch.setattr(tools, "run_sql", unreachable)
+    run = ask("Which chain is cheapest?", scripted_model(("sql", GOOD_SQL), answer()))
+
+    # One model call: the error was not sent back to the model as a query to fix.
+    assert run.requests == 1
+    assert run.attempts == []
+    assert "DatabaseUnavailableError" in run.error
+    assert not run.answer.answerable
+
+
+def test_the_fallback_answer_is_in_the_language_of_the_question():
+    bad = ("sql", "DELETE FROM prices")
+    run = ask("¿Qué cadena tiene los precios más baratos?", scripted_model(*[bad] * 3))
+
+    assert run.error is not None
+    assert run.answer.answer.startswith("El agente no ha podido")
 
 
 def test_an_unknown_prompt_version_is_an_error():
