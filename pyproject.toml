@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.14.3",
     "pydantic-ai-slim[anthropic]>=2.68.0",
     "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
     "sqlglot>=30.31.0",
 ]
 

@@ -1,0 +1,215 @@
+"""The evaluation set: load it, check it and (re)compute the expected answers.
+
+Usage:
+    uv run python -m evals.questions            # check the file against the database
+    uv run python -m evals.questions --update   # rerun every reference SQL and rewrite it
+
+The expected answers are never typed by hand: they are whatever the reference SQL returns.
+The check fails if the stored answer and the database disagree, which is what happens when
+the data is reloaded from a newer dump and nobody updates the file.
+"""
+
+import argparse
+import math
+import sys
+from collections import Counter
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, model_validator
+
+from agent import tools
+from agent.sql_guard import SqlValidationError
+from agent.tools import SqlExecutionError
+
+QUESTIONS_PATH = Path(__file__).parent / "questions.yaml"
+
+Category = Literal["lookup", "aggregation", "comparison", "evolution", "refusal"]
+CATEGORIES: tuple[Category, ...] = ("lookup", "aggregation", "comparison", "evolution", "refusal")
+PER_CATEGORY = 10
+
+HEADER = """\
+# Evaluation set: 50 questions, 10 per category.
+#
+# answer_type says how the runner compares the agent's result with `expected`:
+#   number   one figure, right if within 1 % of expected
+#   text     one value (a date, a name), right if equal
+#   rows     a small table; `ordered: true` means the order is part of the answer
+#   refusal  the agent must say it cannot answer (answerable = false)
+#
+# `expected` is written by `uv run python -m evals.questions --update`; do not edit it.
+"""
+
+
+class Question(BaseModel):
+    id: str
+    category: Category
+    language: Literal["en", "es"] = "en"
+    question: str
+    answer_type: Literal["number", "text", "rows", "refusal"]
+    ordered: bool = False
+    reason: str | None = None
+    reference_sql: str | None = None
+    expected: Any = None
+
+    @model_validator(mode="after")
+    def fields_fit_the_answer_type(self) -> "Question":
+        is_refusal = self.answer_type == "refusal"
+        if is_refusal != (self.category == "refusal"):
+            raise ValueError(f"{self.id}: answer_type refusal goes with category refusal")
+        if is_refusal and not self.reason:
+            raise ValueError(f"{self.id}: a refusal needs a reason")
+        if not is_refusal and not self.reference_sql:
+            raise ValueError(f"{self.id}: needs a reference_sql")
+        if self.ordered and self.answer_type != "rows":
+            raise ValueError(f"{self.id}: ordered only applies to rows")
+        return self
+
+
+def load_questions(path: Path = QUESTIONS_PATH) -> list[Question]:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return [Question(**item) for item in raw["questions"]]
+
+
+def structure_problems(questions: list[Question]) -> list[str]:
+    """Problems that need no database: counts per category and duplicated ids."""
+    problems = []
+    for qid, count in Counter(q.id for q in questions).items():
+        if count > 1:
+            problems.append(f"{qid}: id used {count} times")
+    per_category = Counter(q.category for q in questions)
+    for category in CATEGORIES:
+        if per_category[category] != PER_CATEGORY:
+            problems.append(
+                f"{category}: {per_category[category]} questions, expected {PER_CATEGORY}"
+            )
+    return problems
+
+
+def _plain(value: Any) -> Any:
+    """Database value -> something YAML stores and compares cleanly."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def compute_expected(question: Question) -> Any:
+    """Run the reference SQL through the agent's own tool and shape the result.
+
+    Using tools.run_sql means every reference query obeys the same rules as the agent's
+    (single SELECT, LIMIT, read-only role, timeout): an answer the agent could not have
+    produced is not a fair reference.
+    """
+    if question.reference_sql is None:
+        return None
+    result = tools.run_sql(question.reference_sql)
+    rows = [[_plain(value) for value in row] for row in result.rows]
+    if question.answer_type == "rows":
+        return rows
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise ValueError(f"expected one value, got {result.row_count} rows x {result.columns}")
+    return rows[0][0]
+
+
+def same_answer(stored: Any, fresh: Any) -> bool:
+    """Equal, allowing for float noise (2.76 stored vs 2.7600000000000002 computed)."""
+    if isinstance(stored, list) and isinstance(fresh, list):
+        return len(stored) == len(fresh) and all(
+            same_answer(a, b) for a, b in zip(stored, fresh, strict=True)
+        )
+    numbers = (int, float)
+    if isinstance(stored, numbers) and isinstance(fresh, numbers):
+        return math.isclose(stored, fresh, rel_tol=1e-9, abs_tol=1e-9)
+    return stored == fresh
+
+
+def database_problems(questions: list[Question]) -> list[str]:
+    """Run every reference SQL and compare with the stored expected answer."""
+    problems = []
+    for q in questions:
+        try:
+            fresh = compute_expected(q)
+        except (SqlValidationError, SqlExecutionError, ValueError) as error:
+            problems.append(f"{q.id}: {error}")
+            continue
+        if q.answer_type == "rows" and not fresh:
+            problems.append(f"{q.id}: the reference SQL returns no rows")
+        elif q.answer_type == "refusal" and fresh not in (None, 0):
+            problems.append(f"{q.id}: the proof of absence returns {fresh}, not 0")
+        elif not same_answer(q.expected, fresh):
+            problems.append(f"{q.id}: stored {q.expected!r}, database says {fresh!r}")
+    return problems
+
+
+# --- writing the file back ----------------------------------------------------------
+
+
+class _Dumper(yaml.SafeDumper):
+    """Block style for questions, one line per row of data, SQL as a literal block."""
+
+
+def _represent_str(dumper: yaml.SafeDumper, value: str) -> yaml.Node:
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+def _represent_list(dumper: yaml.SafeDumper, value: list) -> yaml.Node:
+    is_row = all(not isinstance(item, list | dict) for item in value)
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", value, flow_style=is_row)
+
+
+_Dumper.add_representer(str, _represent_str)
+_Dumper.add_representer(list, _represent_list)
+
+
+def dump_questions(questions: list[Question]) -> str:
+    parts = [HEADER, "\nquestions:\n"]
+    previous = None
+    for q in questions:
+        if q.category != previous:
+            parts.append(f"\n# {'-' * 64} {q.category}\n")
+            previous = q.category
+        fields = q.model_dump(exclude_defaults=True)
+        parts.append(
+            yaml.dump(
+                [fields],
+                Dumper=_Dumper,
+                sort_keys=False,
+                allow_unicode=True,
+                default_flow_style=False,
+                width=92,
+            )
+        )
+    return "".join(parts)
+
+
+def update(path: Path = QUESTIONS_PATH) -> list[Question]:
+    questions = load_questions(path)
+    updated = [q.model_copy(update={"expected": compute_expected(q)}) for q in questions]
+    path.write_text(dump_questions(updated), encoding="utf-8")
+    return updated
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Check or update the evaluation questions.")
+    parser.add_argument("--update", action="store_true", help="rewrite the expected answers")
+    args = parser.parse_args()
+    sys.stdout.reconfigure(encoding="utf-8")
+
+    questions = update() if args.update else load_questions()
+    problems = structure_problems(questions) + database_problems(questions)
+    for problem in problems:
+        print(problem)
+    if problems:
+        sys.exit(f"{len(problems)} problem(s) in {QUESTIONS_PATH.name}")
+    with_sql = sum(q.reference_sql is not None for q in questions)
+    print(f"{len(questions)} questions OK, {with_sql} reference queries ran without error.")
+
+
+if __name__ == "__main__":
+    main()

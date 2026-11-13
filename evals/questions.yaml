@@ -1,0 +1,599 @@
+# Evaluation set: 50 questions, 10 per category.
+#
+# answer_type says how the runner compares the agent's result with `expected`:
+#   number   one figure, right if within 1 % of expected
+#   text     one value (a date, a name), right if equal
+#   rows     a small table; `ordered: true` means the order is part of the answer
+#   refusal  the agent must say it cannot answer (answerable = false)
+#
+# `expected` is written by `uv run python -m evals.questions --update`; do not edit it.
+
+questions:
+
+# ---------------------------------------------------------------- lookup
+- id: L01
+  category: lookup
+  question: How many price records are there for Carrefour stores?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*)
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain = 'Carrefour'
+    LIMIT 1
+  expected: 30805
+- id: L02
+  category: lookup
+  question: How many stores are in the database?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM locations LIMIT 1
+  expected: 2285
+- id: L03
+  category: lookup
+  question: How many products are in the catalogue?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM products LIMIT 1
+  expected: 65826
+- id: L04
+  category: lookup
+  question: What is the date of the most recent price in the database?
+  answer_type: text
+  reference_sql: |
+    SELECT max(date) FROM prices LIMIT 1
+  expected: '2026-11-12'
+- id: L05
+  category: lookup
+  question: How many prices were recorded in 2025?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM prices
+    WHERE date >= '2025-01-01' AND date < '2026-01-01'
+    LIMIT 1
+  expected: 44736
+- id: L06
+  category: lookup
+  question: How many price records are flagged as a promotion?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM prices WHERE is_discounted LIMIT 1
+  expected: 4631
+- id: L07
+  category: lookup
+  question: What is the highest price ever recorded for the product with barcode 3017620422003?
+  answer_type: number
+  reference_sql: |
+    SELECT max(price) FROM prices WHERE product_code = '3017620422003' LIMIT 1
+  expected: 4.92
+- id: L08
+  category: lookup
+  question: How many Lidl stores are in the database?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FROM locations WHERE chain = 'Lidl' LIMIT 1
+  expected: 160
+- id: L09
+  category: lookup
+  language: es
+  question: ¿Cuántos precios hay registrados en tiendas de la ciudad de Grenoble?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*)
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.city = 'Grenoble'
+    LIMIT 1
+  expected: 25296
+- id: L10
+  category: lookup
+  language: es
+  question: ¿Cuántas cadenas distintas hay en la base de datos?
+  answer_type: number
+  reference_sql: |
+    SELECT count(DISTINCT chain) FROM locations LIMIT 1
+  expected: 113
+
+# ---------------------------------------------------------------- aggregation
+- id: A01
+  category: aggregation
+  question: Which five chains have the most price records, and how many each?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT l.chain, count(*) AS prices
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain IS NOT NULL
+    GROUP BY l.chain
+    ORDER BY prices DESC
+    LIMIT 5
+  expected:
+  - [E.Leclerc, 52842]
+  - [Carrefour, 30805]
+  - [Auchan, 23373]
+  - [Intermarché, 18841]
+  - [U, 16823]
+- id: A02
+  category: aggregation
+  question: What is the median price across all price records?
+  answer_type: number
+  reference_sql: |
+    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY price) FROM prices LIMIT 1
+  expected: 2.76
+- id: A03
+  category: aggregation
+  question: Which city has the most stores, and how many?
+  answer_type: rows
+  reference_sql: |
+    SELECT city, count(*) AS stores
+    FROM locations
+    WHERE city IS NOT NULL
+    GROUP BY city
+    ORDER BY stores DESC
+    LIMIT 1
+  expected:
+  - [Paris, 349]
+- id: A04
+  category: aggregation
+  question: What percentage of all price records are dated in 2026?
+  answer_type: number
+  reference_sql: |
+    SELECT round(100.0 * count(*) FILTER (WHERE date >= '2026-01-01') / count(*), 2)
+    FROM prices
+    LIMIT 1
+  expected: 51.51
+- id: A05
+  category: aggregation
+  question: How many products have been priced in at least 10 different chains?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*)
+    FROM (
+      SELECT p.product_code
+      FROM prices p JOIN locations l ON l.id = p.location_id
+      WHERE l.chain IS NOT NULL
+      GROUP BY p.product_code
+      HAVING count(DISTINCT l.chain) >= 10
+    ) AS widely_sold
+    LIMIT 1
+  expected: 78
+- id: A06
+  category: aggregation
+  question: Which month of 2026 has the most price records, and how many?
+  answer_type: rows
+  reference_sql: |
+    SELECT to_char(date, 'YYYY-MM') AS month, count(*) AS prices
+    FROM prices
+    WHERE date >= '2026-01-01' AND date < '2027-01-01'
+    GROUP BY month
+    ORDER BY prices DESC
+    LIMIT 1
+  expected:
+  - [2026-02, 29003]
+- id: A07
+  category: aggregation
+  question: What is the average price per kilo of dark chocolate (category en:dark-chocolates,
+    including its subcategories), across all price records?
+  answer_type: number
+  reference_sql: |
+    SELECT round(avg(price_per_unit), 2)
+    FROM v_price_per_unit
+    WHERE 'en:dark-chocolates' = ANY(categories) AND per_unit = 'kg'
+    LIMIT 1
+  expected: 25.5
+- id: A08
+  category: aggregation
+  question: Among chains with at least 1,000 price records, which one has the highest share of
+    promotional prices, and what is that percentage?
+  answer_type: rows
+  reference_sql: |
+    SELECT l.chain,
+           round(100.0 * count(*) FILTER (WHERE p.is_discounted) / count(*), 2) AS pct_promo
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain IS NOT NULL
+    GROUP BY l.chain
+    HAVING count(*) >= 1000
+    ORDER BY pct_promo DESC
+    LIMIT 1
+  expected:
+  - [Biocoop, 8.77]
+- id: A09
+  category: aggregation
+  language: es
+  question: ¿Cuántos productos distintos tienen al menos 50 precios registrados?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*)
+    FROM (
+      SELECT product_code FROM prices GROUP BY product_code HAVING count(*) >= 50
+    ) AS well_covered
+    LIMIT 1
+  expected: 73
+- id: A10
+  category: aggregation
+  language: es
+  question: ¿Cuál es la mediana del precio por litro del aceite de oliva virgen extra (categoría
+    en:extra-virgin-olive-oils), contando todos los precios registrados?
+  answer_type: number
+  reference_sql: |
+    SELECT round((percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_unit))::numeric, 2)
+    FROM v_price_per_unit
+    WHERE 'en:extra-virgin-olive-oils' = ANY(categories) AND per_unit = 'l'
+    LIMIT 1
+  expected: 13.32
+
+# ---------------------------------------------------------------- comparison
+- id: C01
+  category: comparison
+  question: Among chains with at least 20 non-promotional price records of whole milk (category
+    en:whole-milks, including subcategories), which chain has the lowest average price per litre,
+    and what is it?
+  answer_type: rows
+  reference_sql: |
+    SELECT chain, round(avg(price_per_unit), 2) AS avg_eur_per_l
+    FROM v_price_per_unit
+    WHERE 'en:whole-milks' = ANY(categories)
+      AND per_unit = 'l' AND NOT is_discounted AND chain IS NOT NULL
+    GROUP BY chain
+    HAVING count(*) >= 20
+    ORDER BY avg(price_per_unit)
+    LIMIT 1
+  expected:
+  - [Auchan, 1.83]
+- id: C02
+  category: comparison
+  question: For the product with barcode 3017620422003, which chain has the lowest average price
+    among chains with at least 5 price records of it, and what is that average?
+  answer_type: rows
+  reference_sql: |
+    SELECT l.chain, round(avg(p.price), 2) AS avg_price
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE p.product_code = '3017620422003' AND l.chain IS NOT NULL
+    GROUP BY l.chain
+    HAVING count(*) >= 5
+    ORDER BY avg(p.price)
+    LIMIT 1
+  expected:
+  - [E.Leclerc, 3.15]
+- id: C03
+  category: comparison
+  question: What is the average price per kilo of dark chocolate (category en:dark-chocolates,
+    including subcategories) at Carrefour and at E.Leclerc?
+  answer_type: rows
+  reference_sql: |
+    SELECT chain, round(avg(price_per_unit), 2) AS avg_eur_per_kg
+    FROM v_price_per_unit
+    WHERE 'en:dark-chocolates' = ANY(categories)
+      AND per_unit = 'kg' AND chain IN ('Carrefour', 'E.Leclerc')
+    GROUP BY chain
+    ORDER BY chain
+    LIMIT 2
+  expected:
+  - [Carrefour, 24.94]
+  - [E.Leclerc, 19.17]
+- id: C04
+  category: comparison
+  question: Considering only products that have prices at both Carrefour and E.Leclerc, for how
+    many of them is the average price at Carrefour strictly lower than at E.Leclerc?
+  answer_type: number
+  reference_sql: |
+    WITH by_chain AS (
+      SELECT p.product_code, l.chain, avg(p.price) AS avg_price
+      FROM prices p JOIN locations l ON l.id = p.location_id
+      WHERE l.chain IN ('Carrefour', 'E.Leclerc')
+      GROUP BY p.product_code, l.chain
+    )
+    SELECT count(*)
+    FROM by_chain c JOIN by_chain e USING (product_code)
+    WHERE c.chain = 'Carrefour' AND e.chain = 'E.Leclerc' AND c.avg_price < e.avg_price
+    LIMIT 1
+  expected: 761
+- id: C05
+  category: comparison
+  question: Among chains with at least 30 price records of dry pasta (category en:dry-pastas,
+    including subcategories), which three have the lowest median price per kilo?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT chain,
+           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_unit))::numeric, 2)
+             AS median_eur_per_kg
+    FROM v_price_per_unit
+    WHERE 'en:dry-pastas' = ANY(categories) AND per_unit = 'kg' AND chain IS NOT NULL
+    GROUP BY chain
+    HAVING count(*) >= 30
+    ORDER BY median_eur_per_kg
+    LIMIT 3
+  expected:
+  - [E.Leclerc, 1.98]
+  - [Intermarché, 2.48]
+  - [Match, 2.61]
+- id: C06
+  category: comparison
+  question: How many more stores does Lidl have than Aldi in the database?
+  answer_type: number
+  reference_sql: |
+    SELECT count(*) FILTER (WHERE chain = 'Lidl') - count(*) FILTER (WHERE chain = 'Aldi')
+    FROM locations
+    LIMIT 1
+  expected: 111
+- id: C07
+  category: comparison
+  question: Which chain has prices for the most distinct products, and how many?
+  answer_type: rows
+  reference_sql: |
+    SELECT l.chain, count(DISTINCT p.product_code) AS products
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain IS NOT NULL
+    GROUP BY l.chain
+    ORDER BY products DESC
+    LIMIT 1
+  expected:
+  - [E.Leclerc, 21461]
+- id: C08
+  category: comparison
+  question: What is the median price of a price record at Monoprix and at Franprix?
+  answer_type: rows
+  reference_sql: |
+    SELECT l.chain,
+           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY p.price))::numeric, 2)
+             AS median_price
+    FROM prices p JOIN locations l ON l.id = p.location_id
+    WHERE l.chain IN ('Monoprix', 'Franprix')
+    GROUP BY l.chain
+    ORDER BY l.chain
+    LIMIT 2
+  expected:
+  - [Franprix, 3.1]
+  - [Monoprix, 3.59]
+- id: C09
+  category: comparison
+  language: es
+  question: Ordena E.Leclerc, Carrefour, Auchan y U de más barata a más cara según el precio medio
+    por kilo de la mantequilla (categoría en:butters, con sus subcategorías).
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT chain, round(avg(price_per_unit), 2) AS avg_eur_per_kg
+    FROM v_price_per_unit
+    WHERE 'en:butters' = ANY(categories)
+      AND per_unit = 'kg' AND chain IN ('E.Leclerc', 'Carrefour', 'Auchan', 'U')
+    GROUP BY chain
+    ORDER BY avg(price_per_unit)
+    LIMIT 4
+  expected:
+  - [E.Leclerc, 10.18]
+  - [Auchan, 11.1]
+  - [Carrefour, 12.27]
+  - [U, 12.55]
+- id: C10
+  category: comparison
+  language: es
+  question: ¿En cuántas ciudades distintas tiene tiendas Carrefour y en cuántas E.Leclerc?
+  answer_type: rows
+  reference_sql: |
+    SELECT chain, count(DISTINCT city) AS cities
+    FROM locations
+    WHERE chain IN ('Carrefour', 'E.Leclerc')
+    GROUP BY chain
+    ORDER BY chain
+    LIMIT 2
+  expected:
+  - [Carrefour, 241]
+  - [E.Leclerc, 179]
+
+# ---------------------------------------------------------------- evolution
+- id: T01
+  category: evolution
+  question: How many price records are there for each year from 2022 to 2026?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT extract(year FROM date)::int AS year, count(*) AS prices
+    FROM prices
+    WHERE date >= '2022-01-01' AND date < '2027-01-01'
+    GROUP BY year
+    ORDER BY year
+    LIMIT 5
+  expected:
+  - [2022, 4511]
+  - [2023, 6490]
+  - [2024, 27641]
+  - [2025, 44736]
+  - [2026, 95470]
+- id: T02
+  category: evolution
+  question: What was the average price of the product with barcode 3017620422003 in each year
+    from 2024 to 2026?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT extract(year FROM date)::int AS year, round(avg(price), 2) AS avg_price
+    FROM prices
+    WHERE product_code = '3017620422003' AND date >= '2024-01-01' AND date < '2027-01-01'
+    GROUP BY year
+    ORDER BY year
+    LIMIT 3
+  expected:
+  - [2024, 3.57]
+  - [2025, 3.74]
+  - [2026, 3.84]
+- id: T03
+  category: evolution
+  question: By what percentage did the median price per litre of extra virgin olive oil (category
+    en:extra-virgin-olive-oils) change from 2024 to 2026?
+  answer_type: number
+  reference_sql: |
+    WITH yearly AS (
+      SELECT extract(year FROM date)::int AS year,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_unit) AS median
+      FROM v_price_per_unit
+      WHERE 'en:extra-virgin-olive-oils' = ANY(categories) AND per_unit = 'l'
+      GROUP BY year
+    )
+    SELECT round((100.0 * (b.median - a.median) / a.median)::numeric, 2)
+    FROM yearly a, yearly b
+    WHERE a.year = 2024 AND b.year = 2026
+    LIMIT 1
+  expected: -2.89
+- id: T04
+  category: evolution
+  language: es
+  question: ¿Cuántas veces más precios se registraron en febrero de 2026 que en febrero de 2025?
+  answer_type: number
+  reference_sql: |
+    SELECT round(
+      1.0 * count(*) FILTER (WHERE date >= '2026-02-01' AND date < '2026-03-01')
+          / count(*) FILTER (WHERE date >= '2025-02-01' AND date < '2025-03-01'), 2)
+    FROM prices
+    LIMIT 1
+  expected: 6.43
+- id: T05
+  category: evolution
+  question: What is the first year with more than 10,000 price records?
+  answer_type: number
+  reference_sql: |
+    SELECT extract(year FROM date)::int AS year
+    FROM prices
+    GROUP BY year
+    HAVING count(*) > 10000
+    ORDER BY year
+    LIMIT 1
+  expected: 2024
+- id: T06
+  category: evolution
+  question: On what date was the first price of the product with barcode 3274080001005 recorded?
+  answer_type: text
+  reference_sql: |
+    SELECT min(date) FROM prices WHERE product_code = '3274080001005' LIMIT 1
+  expected: '2021-02-06'
+- id: T07
+  category: evolution
+  question: By how many euros did the average price of the product with barcode 3523230030793
+    change from 2022 to 2026?
+  answer_type: number
+  reference_sql: |
+    SELECT round(
+      avg(price) FILTER (WHERE date >= '2026-01-01' AND date < '2027-01-01')
+      - avg(price) FILTER (WHERE date >= '2022-01-01' AND date < '2023-01-01'), 2)
+    FROM prices
+    WHERE product_code = '3523230030793'
+    LIMIT 1
+  expected: 0.46
+- id: T08
+  category: evolution
+  question: How many distinct products had at least one price in each year from 2024 to 2026?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT extract(year FROM date)::int AS year, count(DISTINCT product_code) AS products
+    FROM prices
+    WHERE date >= '2024-01-01' AND date < '2027-01-01'
+    GROUP BY year
+    ORDER BY year
+    LIMIT 3
+  expected:
+  - [2024, 18115]
+  - [2025, 27000]
+  - [2026, 40741]
+- id: T09
+  category: evolution
+  question: How many price records were added in each quarter of 2026?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT extract(quarter FROM date)::int AS quarter, count(*) AS prices
+    FROM prices
+    WHERE date >= '2026-01-01' AND date < '2027-01-01'
+    GROUP BY quarter
+    ORDER BY quarter
+    LIMIT 4
+  expected:
+  - [1, 53824]
+  - [2, 15343]
+  - [3, 18839]
+  - [4, 7464]
+- id: T10
+  category: evolution
+  language: es
+  question: ¿Cuántas tiendas distintas registraron al menos un precio en cada año de 2023 a 2026?
+  answer_type: rows
+  ordered: true
+  reference_sql: |
+    SELECT extract(year FROM date)::int AS year, count(DISTINCT location_id) AS stores
+    FROM prices
+    WHERE date >= '2023-01-01' AND date < '2027-01-01'
+    GROUP BY year
+    ORDER BY year
+    LIMIT 4
+  expected:
+  - [2023, 67]
+  - [2024, 690]
+  - [2025, 1111]
+  - [2026, 923]
+
+# ---------------------------------------------------------------- refusal
+- id: R01
+  category: refusal
+  language: es
+  question: ¿Cuánto cuesta el litro de leche entera en Mercadona?
+  answer_type: refusal
+  reason: There are no Mercadona stores; all stores are in France.
+  reference_sql: |
+    SELECT count(*) FROM locations
+    WHERE chain ILIKE '%mercadona%' OR store_brand ILIKE '%mercadona%' OR name ILIKE '%mercadona%'
+    LIMIT 1
+  expected: 0
+- id: R02
+  category: refusal
+  question: What is the average price of olive oil in supermarkets in Madrid?
+  answer_type: refusal
+  reason: There are no stores in Madrid or anywhere outside France.
+  reference_sql: |
+    SELECT count(*) FROM locations WHERE city ILIKE '%madrid%' OR country <> 'FR' LIMIT 1
+  expected: 0
+- id: R03
+  category: refusal
+  question: How many jars of Nutella did Carrefour sell in 2025?
+  answer_type: refusal
+  reason: The database has observed shelf prices, not sales or volumes.
+- id: R04
+  category: refusal
+  question: Which chain has the highest profit margin on dairy products?
+  answer_type: refusal
+  reason: There are no costs or margins, only retail prices.
+- id: R05
+  category: refusal
+  question: What will the price of butter be in December 2027?
+  answer_type: refusal
+  reason: A forecast, not a fact in the data; the last price is from November 2026.
+- id: R06
+  category: refusal
+  question: What was the average price of a litre of milk in 2005?
+  answer_type: refusal
+  reason: The earliest price is from 2010.
+  reference_sql: |
+    SELECT count(*) FROM prices WHERE date < '2006-01-01' LIMIT 1
+  expected: 0
+- id: R07
+  category: refusal
+  question: Which products are currently out of stock at Lidl?
+  answer_type: refusal
+  reason: There is no stock or availability information.
+- id: R08
+  category: refusal
+  question: How much does an iPhone 15 cost at Auchan?
+  answer_type: refusal
+  reason: No such product in the catalogue.
+  reference_sql: |
+    SELECT count(*) FROM products WHERE name ILIKE '%iphone%' LIMIT 1
+  expected: 0
+- id: R09
+  category: refusal
+  question: Which one is cheaper?
+  answer_type: refusal
+  reason: Ambiguous; the question does not say which products or chains to compare.
+- id: R10
+  category: refusal
+  language: es
+  question: ¿Qué clientes compran más productos ecológicos?
+  answer_type: refusal
+  reason: There is no customer or purchase data.

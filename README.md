@@ -5,7 +5,8 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 4 of 10: the agent runs from the terminal; the evaluation comes next.
+> Work in progress. Day 5 of 10: the agent runs from the terminal and the 50 evaluation
+> questions are written; the first measurement comes next.
 
 ## Data
 
@@ -81,6 +82,32 @@ Known limitations, left in on purpose and relevant for the evaluation:
 - **Not only food.** There are cosmetics and household goods, with unit prices in the
   thousands of EUR per litre that are correct.
 
+## Evaluation set
+
+`evals/questions.yaml` holds 50 questions, 10 per category, 10 of them in Spanish:
+
+| Category | What it tests | Example |
+|---|---|---|
+| lookup | One table, one filter | How many Lidl stores are in the database? |
+| aggregation | Grouping, medians, percentages | Which five chains have the most price records? |
+| comparison | Chains against each other, unit prices | Which chain has the cheapest whole milk per litre? |
+| evolution | Change over time | By what percentage did olive oil change from 2024 to 2026? |
+| refusal | Questions the data cannot answer | How many jars of Nutella did Carrefour sell in 2025? |
+
+Each question has a reference SQL and the answer it returns. Decisions:
+
+- **Expected answers are computed, not typed.** `uv run python -m evals.questions --update`
+  runs every reference SQL and writes its result into the file; without `--update` it checks
+  that the file still matches the database.
+- **Reference queries obey the agent's rules.** They run through the same `run_sql` tool:
+  one SELECT, a LIMIT, the read-only role, the 5 s timeout.
+- **Questions are worded to have one right answer.** They say average or median, with or
+  without promotions, and the minimum number of records for a chain to count.
+- **Refusals carry proof where there is one.** Four of the ten have a query that shows the
+  data is absent (no Mercadona store, nothing before 2010); the other six ask for things
+  the schema does not have (sales, margins, stock, customers), for a forecast, or are
+  ambiguous.
+
 ## Run it
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
@@ -91,6 +118,7 @@ docker compose up -d        # PostgreSQL on localhost:5432
 uv sync                     # Python 3.11 + dev tools
 uv run python -m data.load  # clean the dumps and load the database
 uv run python -m agent.cli "Which chain has the cheapest whole milk per litre?"
+uv run python -m evals.questions   # check the 50 questions against the database
 uv run ruff check .
 uv run python -m pytest
 ```
