@@ -5,7 +5,7 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 1 of 10.
+> Work in progress. Day 2 of 10: the database is loaded; the agent comes next.
 
 ## Data
 
@@ -45,6 +45,42 @@ Things the counts already show that the cleaning step (day 2) must handle:
   produce with no barcode).
 - Before 2024 the data is sparse: 90 % of French prices are from 2024 onwards.
 
+### Cleaning decisions
+
+`data/load.py` applies these rules in order and prints how many rows each one removes.
+Of the 220,100 French prices, 185,337 are loaded (84 %), for 65,826 products in 2,285 stores.
+
+| Rule | Rows removed | Why |
+|---|---|---|
+| Product has no name | 16,984 (7.7 %) | The agent finds products by name; a bare barcode cannot be asked about. |
+| `CATEGORY` price (no barcode) | 8,336 (3.8 %) | Loose produce priced per kilo or per piece; it has no product row to join to. |
+| Flagged as duplicate by the source | 5,424 (2.5 %) | Open Prices already marks these with `duplicate_of`. |
+| Same product, store and day | 3,739 (1.7 %) | Two reports of one shelf price; the most recent report is kept. |
+| Not in EUR | 174 (0.1 %) | Overseas territories (XPF) and data-entry errors (ADP). |
+| Price ≤ 0 or > 200 EUR | 106 (0.0 %) | 99.9 % of prices are under 92 EUR; above 200 it is not a supermarket shelf price. |
+
+Other decisions:
+
+- **Chains.** Store formats and spellings collapse into one chain (`Carrefour Market`,
+  `Carrefour City` → `Carrefour`; three spellings of `E.Leclerc` → one) with the rules in
+  `data/chains.py`. The original value stays in `locations.store_brand`. Stores with no
+  brand that match no rule are independent shops and get `chain = NULL` (14,067 prices, 7.6 %).
+- **Units.** Sizes come from Open Food Facts already converted to g or ml. Any other unit is
+  stored as unknown. `v_price_per_unit` gives EUR per kilo or litre and leaves out products
+  with unknown size or a size under 5 g/ml (165,995 prices remain).
+- **Categories.** `products.category` is the most specific Open Food Facts tag;
+  `products.categories` keeps the whole path so a broad category can be filtered too.
+
+Known limitations, left in on purpose and relevant for the evaluation:
+
+- **Multipacks.** Some prices look like the price of a pack (1 l of own-brand UHT milk at
+  9.30 EUR) while the product size says 1 l, so the unit price is wrong. The data has no
+  field to detect this reliably.
+- **Uneven coverage.** Prices are crowdsourced: 52 % of products have a single observation,
+  and data before 2024 is sparse. Averages over few rows are fragile.
+- **Not only food.** There are cosmetics and household goods, with unit prices in the
+  thousands of EUR per litre that are correct.
+
 ## Run it
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
@@ -53,6 +89,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Docker.
 cp .env.example .env        # then edit the password
 docker compose up -d        # PostgreSQL on localhost:5432
 uv sync                     # Python 3.11 + dev tools
+uv run python -m data.load  # clean the dumps and load the database
 uv run ruff check .
 uv run python -m pytest
 ```
