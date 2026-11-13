@@ -5,7 +5,8 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 2 of 10: the database is loaded; the agent comes next.
+> Work in progress. Day 3 of 10: the database is loaded and the two tools (`describe_schema`,
+> `run_sql`) are tested; the agent comes next.
 
 ## Data
 
