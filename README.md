@@ -5,8 +5,8 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 7 of 10: the agent is measured, its failures analysed and fixed, and
-> the whole project reviewed ([evaluation report](evals/REPORT.md)); the demo comes next.
+> Work in progress. Day 8 of 10: the agent is measured ([evaluation report](evals/REPORT.md))
+> and has a demo that runs locally; publishing it and the MCP server come next.
 
 ## Data
 
@@ -207,6 +207,40 @@ What to keep in mind when reading these numbers:
   list prices per million tokens (Haiku 5.5: 0.10 / 0.50 USD; Sonnet 5.5: 2 / 10 USD) and
   the ECB rate of 2026-11-12 (1 EUR = 1.1081 USD).
 
+## Demo
+
+A Streamlit app with two pages. Run it from the repo root, with the database up:
+
+```bash
+uv run python -m streamlit run app/streamlit_app.py
+```
+
+- **Ask.** Type a question or pick an example. The page shows the answer, a chart, the rows,
+  the SQL that produced them, and what the answer took: seconds, model calls, queries,
+  tokens and cost. A question the data cannot answer is shown as such, with the reason.
+- **Evaluation.** The figures of every recorded run and, for any run, each question with
+  its verdict, answer and SQL. It reads `evals/results/`, so it cannot disagree with the
+  measurements.
+
+How the chart is chosen: the agent says which kind fits its answer (bar, line, table or
+none) and `app/charts.py` works out the columns from the rows. Time goes on the x axis of a
+line and names on the x axis of bars; the value plotted is the column whose name sounds
+like the answer (a price, an average, a percentage) rather than a count of observations,
+and the page lets the visitor pick another. When the rows cannot carry the chart, there is
+none, and the table is shown.
+
+What a public demo needs, since every question is paid for with the owner's API key:
+
+- 10 questions per session and 200 per day for all visitors together, counted in the
+  server's memory (`app/limits.py`), and 300 characters per question. A reload starts a new
+  session, so the daily limit is the one that bounds the bill; the hard ceiling is the
+  spend limit set in the model provider's console.
+- The model client is loaded once when the server starts, not on a visitor's first question.
+- The answer is shown as plain text, never as Markdown or HTML, and an error shows a
+  sentence, not a traceback.
+
+At the measured 0.0008 EUR per question, a full day at the limit costs about 0.17 EUR.
+
 ## Run it
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker. Download the data first (see
@@ -242,7 +276,7 @@ data/         coverage count, cleaning and loading scripts (not the data)
 sql/          schema, view and sanity checks
 agent/        agent, prompts, tools, SQL rules, command line
 evals/        question sets, grader, runner, results and the report
-tests/        234 tests; the ones that need the database are skipped without it
-app/          Streamlit demo (day 8)
+tests/        271 tests; the ones that need the database are skipped without it
+app/          Streamlit demo: the two pages, the chart choice and the limits
 mcp_server/   MCP server exposing the same tools (day 9)
 ```
