@@ -5,8 +5,9 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
-> Work in progress. Day 8 of 10: the agent is measured ([evaluation report](evals/REPORT.md))
-> and has a demo that runs locally; publishing it and the MCP server come next.
+> Work in progress. Day 9 of 10: the agent is measured ([evaluation report](evals/REPORT.md)),
+> has a demo and an MCP server, and is tested on every push to `main` and every pull
+> request. Publishing the demo is next.
 
 ## Data
 
@@ -241,6 +242,110 @@ What a public demo needs, since every question is paid for with the owner's API 
 
 At the measured 0.0008 EUR per question, a full day at the limit costs about 0.17 EUR.
 
+## MCP server
+
+The same two tools, `describe_schema` and `run_sql`, for any
+[MCP](https://modelcontextprotocol.io) client. There is no model on this side: the client
+brings its own, and the server describes the database and runs read-only queries through
+the functions the agent itself uses, so the SQL rules and limits are the same.
+
+```bash
+uv run python -m mcp_server.server    # speaks MCP over stdin and stdout
+```
+
+To use it from Claude Desktop, add this to `claude_desktop_config.json` with the path of
+your clone (the database must be up, and `.env` filled in):
+
+```json
+{
+  "mcpServers": {
+    "retail-prices": {
+      "command": "uv",
+      "args": ["run", "--directory", "C:/path/to/Retail-Agent-analyst", "python", "-m", "mcp_server.server"]
+    }
+  }
+}
+```
+
+From Claude Code:
+
+```bash
+claude mcp add retail-prices -- uv run --directory C:/path/to/Retail-Agent-analyst python -m mcp_server.server
+```
+
+What the client receives:
+
+- Each tool is marked read-only and has an output schema, so results arrive as typed data
+  (`columns`, `rows`, `row_count`) as well as text.
+- A query that breaks a rule, or that PostgreSQL rejects, comes back as a tool error whose
+  text says what to fix; the client's model can correct it and retry, as the agent does.
+- The server's instructions say where the data comes from and how to use the tools.
+
+It is written with `MCPServer`, the name `FastMCP` has in version 2 of the official Python
+SDK. `tests/test_mcp_server.py` calls it through a real MCP client, in memory and as a
+process.
+
+## Deploy
+
+The demo needs two hosted pieces, both with a free tier: a PostgreSQL database and the
+Streamlit app. Nothing secret goes in the repo: the connection strings and the API key are
+typed into `.env` locally and into the app's secrets.
+
+This is the procedure, checked against the documentation of both services; it has not been
+carried out yet.
+
+**1. Database** (written for [Neon](https://neon.com); any hosted PostgreSQL works)
+
+- Create a project in a US region. Streamlit Community Cloud runs in the United States, and
+  every query crosses the distance between the two.
+- Put the owner's connection string in `.env` as `ADMIN_DATABASE_URL`. Use the direct host,
+  not the pooled one, to load.
+- Set `AGENT_DB_PASSWORD` in `.env` to a long random password of letters and digits (any
+  other character would have to be percent-encoded in the connection string). Neon refuses
+  weak passwords for roles created with SQL, which is how the read-only role must be
+  created: a role made in Neon's console is an administrator.
+- Load: `uv run python -m data.load`. It creates the tables, the view and the read-only
+  role in the hosted database, exactly as it does locally.
+- Build `AGENT_DATABASE_URL` from the owner's string by replacing the user and password
+  with those of the read-only role. Check it with `uv run python -m evals.questions`.
+- Then comment both lines out in `.env`. While `AGENT_DATABASE_URL` is set, everything run
+  locally, the tests included, goes to the hosted database.
+
+On a hosted database the owner is not a superuser, so one barrier is missing: the built-in
+functions cannot be revoked from the read-only role, and `data.load` says so when it
+happens. The SQL check still rejects those functions, the role still cannot write, and the
+time, row and size limits still apply.
+
+**2. Demo** ([Streamlit Community Cloud](https://streamlit.io/cloud))
+
+- New app from this repository, branch `main`, main file `app/streamlit_app.py`. It
+  installs from `uv.lock`.
+- In the advanced settings choose Python 3.11 and paste the secrets, at the top level so
+  that they become environment variables:
+
+  ```toml
+  AGENT_DATABASE_URL = "postgresql://agent_ro:...@.../...?sslmode=require"
+  LLM_MODEL = "anthropic:claude-haiku-5-5"
+  ANTHROPIC_API_KEY = "..."
+  ```
+
+- Before sharing the link, set a monthly spend limit in the model provider's console. The
+  demo's own limits (200 questions a day) live in the server's memory and start again when
+  it restarts.
+
+The app goes to sleep after 12 hours without visitors and the database after 5 minutes.
+The first visitor after that waits for both to wake up and for the model client to load;
+the page says so while it happens.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request: it
+installs exactly what `uv.lock` says,
+lints, starts a PostgreSQL, loads a handful of made-up rows with `data/sample.py` (the real
+dumps are 100 MB) and runs the tests. The tools and the read-only role are therefore tested
+against a real server. No model is called: every test replaces it with a scripted one. The
+one test that needs the real data, the check of the 50 expected answers, is skipped there.
+
 ## Run it
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker. Download the data first (see
@@ -272,11 +377,12 @@ evaluation does that before it starts the clock.
 ## Repo layout
 
 ```
-data/         coverage count, cleaning and loading scripts (not the data)
+data/         coverage count, cleaning and loading scripts, sample rows for CI (not the data)
 sql/          schema, view and sanity checks
 agent/        agent, prompts, tools, SQL rules, command line
 evals/        question sets, grader, runner, results and the report
-tests/        271 tests; the ones that need the database are skipped without it
+tests/        284 tests; the ones that need the database are skipped without it
 app/          Streamlit demo: the two pages, the chart choice and the limits
-mcp_server/   MCP server exposing the same tools (day 9)
+mcp_server/   MCP server exposing the same two tools
+.github/      continuous integration
 ```

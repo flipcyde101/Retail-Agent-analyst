@@ -1,7 +1,11 @@
-"""Specification of describe_schema and run_sql. Needs the loaded database.
+"""Specification of describe_schema and run_sql. Needs a loaded database.
 
-These tests are skipped when PostgreSQL is not reachable (docker compose up -d).
+These tests are skipped when PostgreSQL is not reachable (docker compose up -d). They do not
+depend on how much data there is, so they also run on the sample rows of data/sample.py,
+which is what continuous integration loads.
 """
+
+import os
 
 import psycopg
 import pytest
@@ -15,6 +19,10 @@ def _database_is_up() -> bool:
     try:
         connect().close()
     except (psycopg.Error, KeyError):
+        # In continuous integration the database is part of the job: not reaching it is a
+        # failure to show, not a reason to skip these tests and report success.
+        if os.environ.get("CI"):
+            raise
         return False
     return True
 
@@ -76,8 +84,9 @@ def test_run_sql_reports_postgres_errors_with_their_message():
 
 def test_run_sql_cancels_slow_queries():
     with pytest.raises(SqlExecutionError, match="timeout"):
-        # 185,337 x 185,337 rows to count: far more than 200 ms of work.
-        run_sql("SELECT count(*) FROM prices a, prices b LIMIT 1", timeout_ms=200)
+        # A hundred million numbers to count: far more than 200 ms of work, whatever
+        # the size of the tables.
+        run_sql("SELECT count(*) FROM generate_series(1, 100000000) LIMIT 1", timeout_ms=200)
 
 
 def test_run_sql_cannot_write_even_if_validation_is_bypassed(monkeypatch):
@@ -91,18 +100,35 @@ def test_run_sql_cannot_write_even_if_validation_is_bypassed(monkeypatch):
 
 
 def test_run_sql_refuses_a_result_too_large_to_send_to_a_model():
-    # One row, but the whole products table inside it: the row limit does not catch this.
+    # One row with 660,000 characters in it: the row limit does not catch this.
     with pytest.raises(SqlExecutionError, match="too large"):
-        run_sql("SELECT string_agg(name, ',') FROM products LIMIT 1")
+        run_sql("SELECT string_agg(md5(n::text), ',') FROM generate_series(1, 20000) n LIMIT 1")
 
 
 def test_run_sql_caps_the_rows_itself_if_the_validator_lets_too_many_through(monkeypatch):
     monkeypatch.setattr("agent.tools.validate_sql", lambda query: query)
     with pytest.raises(SqlExecutionError, match="more than 200 rows"):
-        run_sql("SELECT id FROM prices")
+        run_sql("SELECT n FROM generate_series(1, 500) n")
 
 
 def test_run_sql_turns_unusual_types_into_text_instead_of_failing_later():
     result = run_sql("SELECT int4range(1, 5), interval '2 days' LIMIT 1")
     assert result.rows == [["[1, 5)", "2 days, 0:00:00"]]
     assert result.model_dump_json()
+    # Inside an array too: found in review, it broke the JSON of the result.
+    inside = run_sql("SELECT ARRAY[int4range(1, 5)], ARRAY[decode('ff', 'hex')] LIMIT 1")
+    assert inside.rows == [[["[1, 5)"], ["ff"]]]
+    assert inside.model_dump_json()
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("AGENT_DATABASE_URL")),
+    reason="a hosted database does not let its owner revoke built-in functions",
+)
+def test_the_role_cannot_call_the_functions_revoked_from_it():
+    # The second barrier for functions, checked on the server itself and not on our code.
+    with connect() as conn:
+        for call in ("pg_sleep(0)", "pg_terminate_backend(0)", "query_to_xml('', true, true, '')"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(f"SELECT {call}")
+            conn.rollback()

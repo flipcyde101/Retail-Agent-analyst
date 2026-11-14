@@ -132,6 +132,14 @@ def clean_prices(locations: dict, products: dict) -> tuple[list[tuple], Counter]
 
 
 def connect() -> psycopg.Connection:
+    """Connect as the admin: the only place in the project that can write.
+
+    ADMIN_DATABASE_URL, if set, is the connection string of a hosted database; otherwise
+    the local Docker database is used.
+    """
+    url = os.environ.get("ADMIN_DATABASE_URL")
+    if url:
+        return psycopg.connect(url)
     return psycopg.connect(
         # 127.0.0.1 and not "localhost": that name tries IPv6 first, where the container
         # does not listen, and every connection would wait for that attempt to time out.
@@ -169,6 +177,12 @@ UNNEEDED_FUNCTIONS = [
 ]
 
 
+UNNEEDED_FUNCTIONS_QUERY = (
+    "SELECT oid::regprocedure::text FROM pg_proc "
+    "WHERE pronamespace = 'pg_catalog'::regnamespace AND proname LIKE ANY(%s)"
+)
+
+
 def create_readonly_role(cur: psycopg.Cursor) -> None:
     """The role the agent connects with. It can read and nothing else.
 
@@ -177,7 +191,8 @@ def create_readonly_role(cur: psycopg.Cursor) -> None:
     """
     role = sql.Identifier(os.environ["AGENT_DB_USER"])
     password = sql.Literal(os.environ["AGENT_DB_PASSWORD"])
-    database = sql.Identifier(os.environ["POSTGRES_DB"])
+    # The database we are connected to, whichever way the connection was described.
+    database = sql.Identifier(cur.connection.info.dbname)
 
     cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (os.environ["AGENT_DB_USER"],))
     verb = sql.SQL("ALTER") if cur.fetchone() else sql.SQL("CREATE")
@@ -193,15 +208,77 @@ def create_readonly_role(cur: psycopg.Cursor) -> None:
     # demo they let one user kill another's query (pg_terminate_backend), run SQL the
     # validator never sees (query_to_xml), hold locks or sleep. The validator rejects them
     # too; this is the barrier that still stands if the validator has a bug.
-    cur.execute(
-        "SELECT oid::regprocedure::text FROM pg_proc "
-        "WHERE pronamespace = 'pg_catalog'::regnamespace AND proname LIKE ANY(%s)",
-        (UNNEEDED_FUNCTIONS,),
-    )
+    cur.execute(UNNEEDED_FUNCTIONS_QUERY, (UNNEEDED_FUNCTIONS,))
     for (signature,) in cur.fetchall():
-        # The signature comes from the catalog, already quoted by regprocedure.
-        cur.execute(sql.SQL("REVOKE EXECUTE ON FUNCTION {} FROM PUBLIC").format(sql.SQL(signature)))
+        # The signature comes from the catalog, already quoted by regprocedure. A savepoint
+        # per statement: a hosted database may refuse, and that must not undo the load.
+        try:
+            with cur.connection.transaction():
+                cur.execute(
+                    sql.SQL("REVOKE EXECUTE ON FUNCTION {} FROM PUBLIC").format(
+                        sql.SQL(signature)
+                    )
+                )
+        except psycopg.errors.InsufficientPrivilege:
+            break  # not the owner of the built-in functions: reported by the caller
     cur.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(database))
+
+
+def functions_still_callable(cur: psycopg.Cursor) -> list[str]:
+    """Functions of UNNEEDED_FUNCTIONS the agent's role can still call.
+
+    Empty on a database where the admin is a superuser (the local one). On hosted
+    PostgreSQL the admin does not own the built-in functions, the REVOKE has no effect, and
+    for these functions the SQL check is the only barrier.
+    """
+    cur.execute(
+        "SELECT DISTINCT proname FROM pg_proc "
+        "WHERE pronamespace = 'pg_catalog'::regnamespace AND proname LIKE ANY(%s) "
+        "AND has_function_privilege(%s, oid, 'EXECUTE') ORDER BY proname",
+        (UNNEEDED_FUNCTIONS, os.environ["AGENT_DB_USER"]),
+    )
+    return [name for (name,) in cur.fetchall()]
+
+
+def load_rows(products: list[tuple], locations: list[tuple], prices: list[tuple]) -> list[str]:
+    """Recreate the tables, fill them and create the read-only role.
+
+    Returns the built-in functions that could not be revoked from the role (see
+    functions_still_callable).
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute((SQL / "schema.sql").read_text(encoding="utf-8"))
+        copy_rows(
+            cur,
+            "products",
+            ["code", "name", "brand", "category", "categories", "quantity", "unit"],
+            products,
+        )
+        copy_rows(
+            cur,
+            "locations",
+            ["id", "chain", "store_brand", "name", "city", "postcode", "country"],
+            locations,
+        )
+        copy_rows(
+            cur,
+            "prices",
+            ["id", "product_code", "location_id", "price", "currency", "date", "is_discounted"],
+            prices,
+        )
+        cur.execute((SQL / "views.sql").read_text(encoding="utf-8"))
+        create_readonly_role(cur)
+        cur.execute("ANALYZE")
+        return functions_still_callable(cur)
+
+
+def report_callable(still_callable: list[str]) -> None:
+    if still_callable:
+        print(
+            f"Note: this server did not let {len(still_callable)} built-in functions be "
+            f"revoked from the agent's role ({', '.join(still_callable[:4])}...). The SQL "
+            "check still rejects them; the database itself would not."
+        )
 
 
 def main() -> None:
@@ -215,29 +292,11 @@ def main() -> None:
     used_products = {row[1] for row in prices}
     used_locations = {row[2] for row in prices}
 
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute((SQL / "schema.sql").read_text(encoding="utf-8"))
-        copy_rows(
-            cur,
-            "products",
-            ["code", "name", "brand", "category", "categories", "quantity", "unit"],
-            (products[code] for code in used_products),
-        )
-        copy_rows(
-            cur,
-            "locations",
-            ["id", "chain", "store_brand", "name", "city", "postcode", "country"],
-            (locations[i] for i in used_locations),
-        )
-        copy_rows(
-            cur,
-            "prices",
-            ["id", "product_code", "location_id", "price", "currency", "date", "is_discounted"],
-            prices,
-        )
-        cur.execute((SQL / "views.sql").read_text(encoding="utf-8"))
-        create_readonly_role(cur)
-        cur.execute("ANALYZE")
+    still_callable = load_rows(
+        [products[code] for code in used_products],
+        [locations[i] for i in used_locations],
+        prices,
+    )
 
     total = dropped.pop("0_total_in_country")
     print(f"Prices in {COUNTRY}: {total:,}")
@@ -247,6 +306,7 @@ def main() -> None:
         f"Loaded: {len(prices):,} prices, {len(used_products):,} products, "
         f"{len(used_locations):,} stores"
     )
+    report_callable(still_callable)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """The evaluation set is data, and data gets tests too.
 
 The first block needs no database: it runs in CI and catches a malformed file. The last
-test reruns every reference SQL and is skipped when PostgreSQL is not reachable.
+test reruns every reference SQL and is skipped unless the real data is loaded.
 """
 
 import psycopg
@@ -24,12 +24,16 @@ NATURAL = load_questions(QUESTION_SETS["natural"])
 WITH_SQL = [q for q in QUESTIONS + NATURAL if q.reference_sql]
 
 
-def _database_is_up() -> bool:
+REAL_PRICES = 185_337
+
+
+def _real_data_is_loaded() -> bool:
+    """The database is reachable and holds the real dump, not the sample of data/sample.py."""
     try:
-        connect().close()
+        with connect() as conn:
+            return conn.execute("SELECT count(*) FROM prices").fetchone()[0] == REAL_PRICES
     except (psycopg.Error, KeyError):
         return False
-    return True
 
 
 def test_there_are_fifty_questions_ten_per_category_with_unique_ids():
@@ -85,7 +89,7 @@ def test_writing_the_file_and_reading_it_back_changes_nothing(tmp_path):
     assert load_questions(copy) == QUESTIONS
 
 
-@pytest.mark.skipif(not _database_is_up(), reason="database not reachable")
+@pytest.mark.skipif(not _real_data_is_loaded(), reason="needs the real data loaded")
 def test_stored_expected_answers_match_the_database():
     assert database_problems(QUESTIONS) == []
     assert database_problems(NATURAL) == []

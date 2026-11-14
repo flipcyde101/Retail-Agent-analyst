@@ -303,6 +303,16 @@ def test_a_database_that_is_down_ends_the_run_at_once_instead_of_being_retried(m
     assert not run.answer.answerable
 
 
+def test_a_badly_written_connection_string_never_shows_its_password(monkeypatch):
+    # psycopg quotes the connection string in its error; ours must not repeat it.
+    monkeypatch.setenv("AGENT_DATABASE_URL", "postgres//user:s3cret-pw@host/db")
+    with pytest.raises(tools.DatabaseUnavailableError) as failure:
+        tools._connect()
+
+    assert "s3cret-pw" not in str(failure.value)
+    assert failure.value.__cause__ is None
+
+
 def test_the_fallback_answer_is_in_the_language_of_the_question():
     bad = ("sql", "DELETE FROM prices")
     run = ask("¿Qué cadena tiene los precios más baratos?", scripted_model(*[bad] * 3))

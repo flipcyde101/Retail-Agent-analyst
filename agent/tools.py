@@ -55,6 +55,12 @@ def _connect() -> psycopg.Connection:
         return connect()
     except psycopg.OperationalError as error:
         raise DatabaseUnavailableError(f"Cannot connect to the database: {error}") from error
+    except (psycopg.Error, KeyError):
+        # A malformed connection string or a missing variable. psycopg quotes the string,
+        # password included, in its message: it must not travel any further than here.
+        raise DatabaseUnavailableError(
+            "The database connection is not configured correctly."
+        ) from None
 
 
 def describe_schema() -> SchemaDescription:
@@ -77,6 +83,10 @@ def describe_schema() -> SchemaDescription:
 def _plain_cell(value: Any) -> Any:
     if isinstance(value, bytes | bytearray | memoryview):
         return bytes(value).hex()
+    if isinstance(value, list):  # an array column: its items may be unusual types too
+        return [_plain_cell(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _plain_cell(item) for key, item in value.items()}
     return value if isinstance(value, _JSON_READY) else str(value)
 
 
@@ -93,7 +103,9 @@ def run_sql(query: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> SqlResult:
         try:
             with conn.cursor() as cur:
                 # int() guarantees a number: SET does not accept query parameters.
-                cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
+                # LOCAL: for this transaction only. Through a connection pooler (hosted
+                # PostgreSQL) a plain SET may land on another client's connection.
+                cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
                 cur.execute(query)
                 columns = [column.name for column in cur.description]
                 # One row more than allowed is enough to know the limit was not applied.

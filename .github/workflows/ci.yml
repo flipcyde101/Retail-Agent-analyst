@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real PostgreSQL, so the tools and the read-only role are tested against a server
+    # and not against a fake. It holds the made-up rows of data/sample.py: the real dumps
+    # are 100 MB and are not downloaded on every push.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: retail_admin
+          POSTGRES_PASSWORD: ci-only-admin
+          POSTGRES_DB: retail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U retail_admin -d retail"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Passwords of a database that lives for one job and holds invented rows. No model
+    # API key: every test replaces the model with a scripted one.
+    env:
+      POSTGRES_USER: retail_admin
+      POSTGRES_PASSWORD: ci-only-admin
+      POSTGRES_DB: retail
+      AGENT_DB_USER: agent_ro
+      AGENT_DB_PASSWORD: ci-only-agent
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # pipx is on the runner: no third-party action to keep up to date.
+      - name: Install uv
+        run: pipx install uv
+
+      - name: Install (exactly what uv.lock says)
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Load the sample rows and create the read-only role
+        run: uv run python -m data.sample
+
+      # Without this, a broken role would only make the database tests skip.
+      - name: Connect as the read-only role
+        run: uv run python -c "from agent.db import connect; connect().close()"
+
+      - name: Tests
+        run: uv run python -m pytest -q -rs
