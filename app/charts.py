@@ -25,7 +25,25 @@ from plotly.graph_objects import Figure
 from agent.models import SqlResult
 
 MAX_BARS = 30
-MAX_SERIES = 8
+# Bars get their value written on them up to this many; beyond it the labels would collide.
+MAX_LABELLED_BARS = 20
+
+# Colours. One series (every bar chart, a single line) wears the colour of the app. Several
+# lines take SERIES in this fixed order, which was checked with a colour-blindness simulator:
+# every neighbouring pair stays apart, though green and orange only just, so each line also
+# gets its own marker shape. Seven colours, so seven lines at most.
+BRAND = "#0f8f6c"
+SERIES = ["#0f8f6c", "#eb6834", "#2a78d6", "#eda100", "#e87ba4", "#6250d6", "#e34948"]
+SYMBOLS = ["circle", "square", "diamond", "triangle-up", "cross", "triangle-down", "x"]
+MAX_SERIES = len(SERIES)
+# Bars go from the light to the dark end of one green as the value grows: the height
+# already says it, the shade makes the highest and lowest easy to find.
+RAMP = [[0, "#4fb894"], [1, "#0a5c46"]]
+SURFACE = "#fcfcfb"  # the page background in .streamlit/config.toml
+INK = "#1b1f1d"
+MUTED = "#6b716d"
+GRID = "#e6e9e3"
+FONT = '"Source Sans", "Source Sans Pro", "Segoe UI", sans-serif'
 UNKNOWN = "(unknown)"  # shown for NULL names: locations.chain is NULL for independent shops
 
 # Words that say "this is the figure the question is about", most specific first. They are
@@ -186,9 +204,29 @@ def _line(frame: pd.DataFrame, value: str | None) -> Figure | None:
     # would be joined into a zigzag that means nothing.
     if shown.duplicated([x] if series is None else [x, series]).any():
         return None
-    figure = px.line(shown.sort_values(x), x=x, y=y, color=series, markers=True)
+    figure = px.line(
+        shown.sort_values(x),
+        x=x,
+        y=y,
+        color=series,
+        symbol=series,
+        markers=True,
+        color_discrete_sequence=SERIES,
+        symbol_sequence=SYMBOLS,
+    )
     if not all(isinstance(v, date | datetime) for v in _values(shown, x)):
         figure.update_xaxes(type="category")  # years are labels, not 2,024.5
+    # A ring in the colour of the page keeps a marker readable where two lines cross.
+    figure.update_traces(
+        line={"width": 2.5},
+        marker={"size": 9, "line": {"width": 2, "color": SURFACE}},
+        hovertemplate=f"%{{y:{_number_format(shown[y])}}}<extra>%{{fullData.name}}</extra>",
+    )
+    if series is None:
+        figure.update_traces(hovertemplate=f"%{{y:{_number_format(shown[y])}}}<extra></extra>")
+    figure.update_layout(hovermode="x unified")
+    figure.update_xaxes(title_text=label(x), showgrid=False)
+    figure.update_yaxes(title_text=label(y), gridcolor=GRID)
     return _tidy(figure)
 
 
@@ -202,16 +240,96 @@ def _bar(frame: pd.DataFrame, value: str | None) -> Figure | None:
     if labels.duplicated().any():
         return None  # one bar per name: the same name twice needs a table
     shown = frame.assign(**{x: labels}).head(MAX_BARS)
-    if shown[x].str.len().max() > 14:
+    number = _number_format(shown[y])
+    horizontal = shown[x].str.len().max() > 14
+    if horizontal:
         # Long names (products) read better on horizontal bars, first row on top.
         figure = px.bar(shown.iloc[::-1], x=y, y=x, orientation="h")
-        figure.update_yaxes(type="category")
+        figure.update_yaxes(type="category", title_text="", showgrid=False)
+        figure.update_xaxes(title_text=label(y), gridcolor=GRID)
+        value, name = "x", "y"
     else:
         figure = px.bar(shown, x=x, y=y)
-        figure.update_xaxes(type="category")
+        figure.update_xaxes(type="category", title_text=label(x), showgrid=False)
+        figure.update_yaxes(title_text=label(y), gridcolor=GRID)
+        value, name = "y", "x"
+    heights = figure.data[0][value]
+    figure.update_traces(
+        marker={"color": heights, "colorscale": RAMP, "showscale": False, "line": {"width": 0}},
+        hovertemplate=f"%{{{name}}}<br><b>%{{{value}:{number}}}</b><extra></extra>",
+    )
+    if len(shown) <= MAX_LABELLED_BARS:
+        figure.update_traces(
+            texttemplate=f"%{{{value}:{number}}}",
+            textposition="outside",
+            textfont={"color": INK, "size": 13},
+            cliponaxis=False,
+        )
+    # Rounded at the end that carries the value, and room between the bars.
+    figure.update_layout(barcornerradius=5, bargap=0.38)
+    if horizontal:
+        figure.update_layout(height=max(380, 34 * len(shown) + 90))
     return _tidy(figure)
 
 
+def cost_by_version_chart(costs: pd.DataFrame) -> Figure:
+    """Bars of the cost of 100 questions per prompt version, for the evaluation page.
+
+    `costs` has the columns prompt_version, eur_per_100 and runs.
+    """
+    labels = [
+        f"{cost:.2f} EUR · {runs} run{'s' if runs != 1 else ''}"
+        for cost, runs in zip(costs["eur_per_100"], costs["runs"], strict=True)
+    ]
+    figure = px.bar(costs, x="prompt_version", y="eur_per_100", text=labels)
+    figure.update_traces(
+        marker={"color": BRAND, "line": {"width": 0}},
+        textposition="outside",
+        textfont={"color": INK, "size": 13},
+        cliponaxis=False,
+        hovertemplate="%{x}<br><b>%{y:.3f} EUR</b> per 100 questions<extra></extra>",
+    )
+    figure.update_layout(barcornerradius=5, bargap=0.45, height=320)
+    figure.update_xaxes(type="category", title_text="Prompt version", showgrid=False)
+    figure.update_yaxes(title_text="EUR per 100 questions", gridcolor=GRID, rangemode="tozero")
+    return _tidy(figure)
+
+
+def label(column: str) -> str:
+    """A column name as an axis title: avg_price_per_l -> Avg price per l (EUR stays EUR)."""
+    words = [
+        {"eur": "EUR", "pct": "%"}.get(word.lower(), word) for word in column.split("_") if word
+    ]
+    text = " ".join(words)
+    return text[:1].upper() + text[1:]
+
+
+def _number_format(values: pd.Series) -> str:
+    """How to write the figures of a column: 185,337 for whole numbers, 1.25 otherwise."""
+    numbers = [value for value in values.tolist() if _is_number(value)]
+    whole = all(float(value).is_integer() for value in numbers)
+    return ",.0f" if whole else ",.2f"
+
+
 def _tidy(figure: Figure) -> Figure:
-    figure.update_layout(margin={"l": 10, "r": 10, "t": 30, "b": 10}, height=380)
+    """The look every chart shares: the page's colours, a quiet grid, the legend on top."""
+    figure.update_layout(
+        margin={"l": 10, "r": 30, "t": 40, "b": 10},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"family": FONT, "size": 14, "color": INK},
+        legend={"orientation": "h", "y": 1.02, "yanchor": "bottom", "x": 0, "title_text": ""},
+        hoverlabel={"bgcolor": "white", "bordercolor": GRID, "font": {"color": INK}},
+        colorway=SERIES,
+    )
+    if figure.layout.height is None:
+        figure.update_layout(height=380)
+    axis = {
+        "linecolor": GRID,
+        "zerolinecolor": GRID,
+        "tickfont": {"color": MUTED},
+        "title_font": {"color": MUTED, "size": 13},
+    }
+    figure.update_xaxes(**axis)
+    figure.update_yaxes(**axis)
     return figure

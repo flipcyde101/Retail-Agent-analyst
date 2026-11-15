@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from agent.agent import PROMPT_VERSION
+from app.charts import cost_by_version_chart
 
 RESULTS_DIR = Path(__file__).parent.parent / "evals" / "results"
 REPORT_URL = "https://github.com/pitelet222/Retail-Agent-analyst/blob/main/evals/REPORT.md"
@@ -48,6 +49,19 @@ def latest_run(summary: pd.DataFrame, question_set: str, prompt_version: str) ->
     return None if runs.empty else runs.iloc[-1]
 
 
+def cost_by_version(summary: pd.DataFrame, model: str) -> pd.DataFrame:
+    """Average cost of 100 questions for each prompt version: core set, one model.
+
+    An average over the runs of a version, with their number beside it, because a single
+    run of one version is not comparable with five of another.
+    """
+    runs = summary[(summary["question_set"] == "core") & (summary["model"] == model)]
+    runs = runs.dropna(subset=["cost_per_question_eur"])
+    grouped = runs.groupby("prompt_version")["cost_per_question_eur"]
+    costs = pd.DataFrame({"eur_per_100": 100 * grouped.mean(), "runs": grouped.size()})
+    return costs.reset_index().sort_values("prompt_version")
+
+
 def load_run(run_id: str, results_dir: Path = RESULTS_DIR) -> pd.DataFrame:
     """The questions of one run, with the verdict as a word."""
     questions = pd.read_csv(results_dir / f"{run_id}.csv")
@@ -73,24 +87,45 @@ def render() -> None:
     if current is not None:
         st.subheader(f"Latest run of the current version ({current['model']}, {PROMPT_VERSION})")
         accuracy, refusals, latency, cost = st.columns(4)
-        accuracy.metric("Accuracy", f"{current['accuracy_pct']:.0f} %")
-        refusals.metric("Correct refusals", current["refusals"])
-        latency.metric("Median answer", f"{current['latency_median_s']:.1f} s")
+        accuracy.metric("Accuracy", f"{current['accuracy_pct']:.0f} %", border=True)
+        refusals.metric("Correct refusals", current["refusals"], border=True)
+        latency.metric("Median answer", f"{current['latency_median_s']:.1f} s", border=True)
         # Per 100 questions: one question costs a fraction of a cent, which reads badly.
         # A model with no known price has no cost recorded, and none is made up here.
         per_question = current["cost_per_question_eur"]
         priced = "not priced" if pd.isna(per_question) else f"{100 * per_question:.2f} EUR"
-        cost.metric("Cost of 100 questions", priced)
+        cost.metric("Cost of 100 questions", priced, border=True)
         st.caption(
             "50 questions make each one worth 2 points, and two runs of the same agent can "
             "differ by more than that. The report says what the numbers do and do not show."
         )
+
+    if current is not None:
+        costs = cost_by_version(summary, current["model"])
+        if len(costs) > 1:
+            st.subheader("What each prompt version costs")
+            st.plotly_chart(
+                cost_by_version_chart(costs), theme=None, config={"displayModeBar": False}
+            )
+            st.caption(
+                f"Average cost of 100 questions on the core set with {current['model']}; "
+                "the number of runs behind each bar is in its label. From v4 on the schema "
+                "is given in the instructions instead of fetched with a tool call."
+            )
 
     st.subheader("Every run")
     newest_first = summary.iloc[::-1]
     st.dataframe(
         newest_first[list(RUN_COLUMNS)].rename(columns=RUN_COLUMNS),
         hide_index=True,
+        column_config={
+            "Accuracy %": st.column_config.ProgressColumn(
+                "Accuracy %", min_value=0, max_value=100, format="%.0f %%"
+            ),
+            "SQL valid 1st try %": st.column_config.ProgressColumn(
+                "SQL valid 1st try %", min_value=0, max_value=100, format="%.1f %%"
+            ),
+        },
     )
     st.markdown(
         f"Failure types, what fixed them and the comparisons between prompt versions and "

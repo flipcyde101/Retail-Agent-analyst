@@ -1,0 +1,13 @@
+# The look of the demo. Streamlit reads this file locally and on Streamlit Community Cloud.
+# The colours of the charts live in app/charts.py and are chosen to match these.
+
+[theme]
+base = "light"
+primaryColor = "#0f8f6c"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f1f4ef"
+textColor = "#1b1f1d"
+linkColor = "#0b6e53"
+borderColor = "#dfe3dc"
+baseRadius = "0.6rem"
+headingFontWeights = 650

@@ -23,6 +23,8 @@ EXAMPLES = [
     "How many jars of Nutella did Carrefour sell in 2025?",
 ]
 CONFIDENCE = {"high": "High confidence", "medium": "Medium confidence", "low": "Low confidence"}
+# The colour of the badge that carries the confidence the model declared.
+CONFIDENCE_COLOR = {"high": "green", "medium": "orange", "low": "gray"}
 DAILY_LIMIT = QUESTIONS_PER_DAY
 
 
@@ -81,9 +83,14 @@ def _show(run: AgentRun, key: str) -> None:
     st.caption("Question")
     st.text(run.question)
     if run.error:
+        st.badge("Not finished", color="red")
         st.error("The agent could not finish this question.")
     elif not run.answer.answerable:
+        st.badge("No answer in the data", color="orange")
         st.warning("The database cannot answer this question.")
+    else:
+        confidence = run.answer.confidence
+        st.badge(CONFIDENCE[confidence], color=CONFIDENCE_COLOR[confidence])
     st.caption("Answer")
     st.text(run.answer.answer)
 
@@ -92,18 +99,29 @@ def _show(run: AgentRun, key: str) -> None:
         kind = run.answer.chart
         # Only offer a choice of value when there is a chart for it to change.
         if build_chart(kind, run.data) is not None:
-            # The time column (a year is a number too) is the x axis, not a value to plot.
-            options = value_columns(frame, time_column(frame))
-            value = options[0] if options else None
-            if len(options) > 1:
-                value = st.selectbox("Value shown in the chart", options, key=f"value-{key}")
-            figure = build_chart(kind, run.data, value)
-            st.plotly_chart(figure, key=f"chart-{key}")
-            if figure.data[0].type == "bar" and run.data.row_count > MAX_BARS:
-                st.caption(f"The chart shows the first {MAX_BARS} of {run.data.row_count} rows.")
-        st.dataframe(frame, hide_index=True)
-        if run.data.row_count == 200:
-            st.caption("Showing the first 200 rows: the agent's queries are limited to 200.")
+            chart_tab, rows_tab = st.tabs(["Chart", f"Rows ({run.data.row_count})"])
+            with chart_tab:
+                # The time column (a year is a number too) is the x axis, not a value.
+                options = value_columns(frame, time_column(frame))
+                value = options[0] if options else None
+                if len(options) > 1:
+                    value = st.selectbox("Value shown in the chart", options, key=f"value-{key}")
+                figure = build_chart(kind, run.data, value)
+                # theme=None: the chart keeps the colours chosen in app/charts.py.
+                st.plotly_chart(
+                    figure, key=f"chart-{key}", theme=None, config={"displayModeBar": False}
+                )
+                if figure.data[0].type == "bar" and run.data.row_count > MAX_BARS:
+                    st.caption(
+                        f"The chart shows the first {MAX_BARS} of {run.data.row_count} rows."
+                    )
+            rows_place = rows_tab
+        else:
+            rows_place = st.container()
+        with rows_place:
+            st.dataframe(frame, hide_index=True)
+            if run.data.row_count == 200:
+                st.caption("Showing the first 200 rows: the agent's queries are limited to 200.")
 
     if run.answer.sql:
         with st.expander("SQL that produced this answer"):
@@ -132,6 +150,10 @@ def render() -> None:
         "runs it on a read-only PostgreSQL database and answers from the rows, and only "
         "from them. It answers in English, Spanish or French."
     )
+    prices, stores, chains = st.columns(3)
+    prices.metric("Prices observed", "185,337", border=True)
+    stores.metric("Stores", "2,285", border=True)
+    chains.metric("Chains", "113", border=True)
     try:
         start_up()
     except Exception as error:  # noqa: BLE001 - missing key or database: a setup problem
@@ -160,8 +182,8 @@ def render() -> None:
 
     runs: list[AgentRun] = st.session_state.get("runs", [])
     for position, run in enumerate(runs):
-        st.divider()
-        _show(run, key=str(len(runs) - position))
+        with st.container(border=True):
+            _show(run, key=str(len(runs) - position))
 
     st.divider()
     st.caption(
