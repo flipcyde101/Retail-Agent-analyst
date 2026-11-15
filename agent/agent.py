@@ -6,6 +6,7 @@ function and sends the result back; and it repeats until the model returns the f
 which it validates against AgentAnswer. We write the tools, the instructions and the rules.
 """
 
+import datetime
 import os
 import time
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from agent.prompts import PROMPTS
 from agent.sql_guard import SqlValidationError
 from agent.tools import DatabaseUnavailableError, SqlExecutionError
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 # Versions that also get the checks added on day 7 (SQL clean-up, no refusal before looking
 # at the schema, no empty answer). v1 runs exactly as it was first measured.
 STRICT_VERSIONS = frozenset(PROMPTS) - {"v1"}
@@ -36,6 +37,8 @@ STRICT_VERSIONS = frozenset(PROMPTS) - {"v1"}
 LANGUAGE_VERSIONS = frozenset(PROMPTS) - {"v1", "v2"}
 # Versions that get the schema inside the instructions and have no describe_schema tool.
 INLINE_SCHEMA_VERSIONS = frozenset(PROMPTS) - {"v1", "v2", "v3"}
+# Versions that are told today's date.
+DATE_VERSIONS = frozenset(PROMPTS) - {"v1", "v2", "v3", "v4"}
 # The stricter checks send more answers back, so they need more room than the default of 1.
 STRICT_OUTPUT_RETRIES = 3
 
@@ -152,6 +155,11 @@ def schema_text() -> str:
     return "\n".join(lines).strip()
 
 
+def today() -> datetime.date:
+    """Today's date. A function of its own so that tests can fix the day."""
+    return datetime.date.today()
+
+
 FALLBACK_ANSWERS = {
     "en": "The agent could not produce a reliable answer to this question.",
     "es": "El agente no ha podido dar una respuesta fiable a esta pregunta.",
@@ -167,6 +175,11 @@ def instructions(ctx: RunContext[RunState]) -> str:
     text = PROMPTS[ctx.deps.prompt_version]
     if ctx.deps.inline_schema:
         text += f"\nDatabase schema:\n{schema_text()}\n"
+    if ctx.deps.prompt_version in DATE_VERSIONS:
+        text += (
+            f"\nToday's date is {today().isoformat()}. Use it for \"this year\", \"last "
+            "month\" and the like. The data may end before today: max(date) tells where.\n"
+        )
     language = ctx.deps.required_language
     if language:
         # Telling the model beats asking it to work it out: with the prompt rule alone (v2)

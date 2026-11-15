@@ -8,7 +8,7 @@ questions one at a time, so the latency is what a single user would see.
 
 Core set of 50 questions, Haiku 5.5 unless said otherwise.
 
-| | Prompt v1 | Prompt v3 | Prompt v4 (current) | Sonnet 5.5, v3 |
+| | Prompt v1 | Prompt v3 | Prompt v4 | Sonnet 5.5, v3 |
 |---|---|---|---|---|
 | Accuracy | 98 % (49) | 100 % (50), three runs | 100 % (50), three runs | 98 % (49) |
 | Correct refusals | 10 of 10 | 10 of 10 | 10 of 10 | 9 of 10 |
@@ -23,6 +23,8 @@ The questions are the same in every column, as they are today. Two earlier runs 
 the questions before two of them were corrected, gave 90 % and 98 %. The latency of v3 and
 v4 is from runs made minutes apart, with the model client loaded beforehand; comparison 3
 has every run.
+
+v5, the current version, is v4 plus one line with today's date (comparison 4).
 
 On the natural set (22 questions worded like a user's), v3 gets 20 of the 20 graded
 automatically and v4 gets 19 of 20 in each of two runs, with 4 of 4 refusals and no answer
@@ -244,6 +246,31 @@ into the instructions as plain text and removes the tool.
   the median at 15:45 and 5.2 s at 20:31), so only the runs made minutes apart compare.
 - The last run uses the final code: the stricter SQL check and the corrected grader.
 - The schema as text is 1,884 characters; as the JSON the tool returned it was 3,076.
+
+## Comparison 4: telling the model the date (Haiku 5.5, core set)
+
+A model does not know what day it is. Asked about a date in November 2026, v4 called it
+"later than expected". v5 is v4 plus one line at the end of the instructions: today's date,
+and a reminder that the data may end before it.
+
+| | v4 (2026-11-13, 20:58) | v5 (2026-11-14, 19:56) |
+|---|---|---|
+| Accuracy | 100 % | 100 % |
+| Correct refusals | 10 of 10 | 10 of 10 |
+| Failed queries | 2 | 1 |
+| Model calls | 113 | 116 |
+| Cost | 0.041 EUR | 0.043 EUR |
+| Latency, median / p90 / max | 3.9 / 5.6 / 9.7 s | 3.9 / 6.1 / 9.7 s |
+
+- The core set cannot show a gain: none of its questions depends on today's date, and v4
+  already scored 100 %. This run only shows that the extra line breaks nothing.
+- Three questions that do depend on it ("this year", "last month", "how many days ago")
+  were asked once to each version. Both answered all three correctly: v4 got the date from
+  the database, with `CURRENT_DATE` in its SQL. v5 writes the date itself and says in the
+  answer which day it took as today.
+- So the change is small: the model no longer has to think of asking the database for the
+  date, and no longer finds recent dates surprising. It is not a measured improvement.
+- The two runs are a day apart, so their latency does not compare.
 
 ## Against the targets
 

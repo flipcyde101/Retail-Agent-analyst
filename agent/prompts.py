@@ -105,4 +105,9 @@ V4 = V3.replace(
     "   their comments.",
 )
 
-PROMPTS = {"v1": V1, "v2": V2, "v3": V3, "v4": V4}
+# v5 = v4 plus today's date, which agent.py appends. The text is the same: a model does not
+# know what day it is, and with v4 it called a date of November 2026 "later than expected"
+# and could not tell what "this year" or "last month" meant.
+V5 = V4
+
+PROMPTS = {"v1": V1, "v2": V2, "v3": V3, "v4": V4, "v5": V5}

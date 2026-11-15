@@ -5,10 +5,13 @@ describe_schema, then run this SQL, then answer". That makes the loop determinis
 and fast, so what is tested is our code: retries, state and the output validator.
 """
 
+import datetime
+
 import pytest
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from agent import agent as agent_module
 from agent import tools
 from agent.agent import MAX_SQL_ATTEMPTS, ask
 from agent.models import ColumnInfo, SchemaDescription, SqlResult, TableInfo
@@ -270,6 +273,27 @@ def test_v4_puts_the_schema_in_the_instructions_and_hides_the_tool():
     # The schema was in front of the model, so a refusal with no tool call is accepted.
     assert run.requests == 1
     assert run.error is None
+
+
+def test_v5_tells_the_model_what_day_it_is_and_v4_does_not(monkeypatch):
+    # A model does not know the date: without it, "this year" is a guess.
+    monkeypatch.setattr(agent_module, "today", lambda: datetime.date(2026, 11, 14))
+    seen = {}
+
+    for version in ("v4", "v5"):
+
+        def respond(
+            messages: list[ModelMessage], info: AgentInfo, version: str = version
+        ) -> ModelResponse:
+            seen[version] = info.instructions
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, REFUSAL[1])])
+
+        ask("Cheapest chain this year?", FunctionModel(respond), prompt_version=version)
+
+    assert "Today's date is 2026-11-14." in seen["v5"]
+    assert "Today's date" not in seen["v4"]
+    # Apart from the date, v5 is v4: the comparison between them measures only that.
+    assert seen["v5"].startswith(seen["v4"])
 
 
 def test_v3_still_offers_describe_schema_and_keeps_the_schema_out_of_the_instructions():

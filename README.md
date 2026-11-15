@@ -120,7 +120,7 @@ A review that tried to break the first version of the check got past it four way
 a test. This makes the tool fit for a public demo over public data; it is not a sandbox to
 put in front of data that must stay private.
 
-The prompt version is a parameter (`--prompt v1` to `v4` in the command line and in the
+The prompt version is a parameter (`--prompt v1` to `v5` in the command line and in the
 evaluation), and each version keeps the checks it was measured with, so an old result can
 be reproduced.
 
@@ -164,7 +164,7 @@ Full analysis in [evals/REPORT.md](evals/REPORT.md): failure types with an examp
 fixed them, and three comparisons (prompt versions, two models, schema fetched or given).
 Core set of 50 questions, Haiku 5.5 unless said otherwise, 2026-11-13, one question at a time:
 
-| | Prompt v1 | Prompt v3 | Prompt v4 (current) | Sonnet 5.5, v3 |
+| | Prompt v1 | Prompt v3 | Prompt v4 | Sonnet 5.5, v3 |
 |---|---|---|---|---|
 | Accuracy | 98 % (49) | 100 % (50), three runs | 100 % (50), three runs | 98 % (49) |
 | Correct refusals | 10 of 10 | 10 of 10 | 10 of 10 | 9 of 10 |
@@ -177,6 +177,9 @@ Core set of 50 questions, Haiku 5.5 unless said otherwise, 2026-11-13, one quest
 The latency of v3 and v4 is from two runs made one after the other (the response time of the
 model API changes during the day, so runs hours apart do not compare); the other two columns
 are from earlier in the day.
+
+v5, the current version, is v4 plus one line with today's date. One run on 2026-11-14:
+100 % (50), 10 of 10 refusals, 0.043 EUR, median 3.9 s, p90 6.1 s.
 
 On the natural set (`evals/questions_natural.yaml`, 22 questions worded like a user's, run
 with `--set natural`) v4 gets 19 of the 20 graded automatically in each of two runs, and 4
@@ -381,7 +384,7 @@ data/         coverage count, cleaning and loading scripts, sample rows for CI (
 sql/          schema, view and sanity checks
 agent/        agent, prompts, tools, SQL rules, command line
 evals/        question sets, grader, runner, results and the report
-tests/        284 tests; the ones that need the database are skipped without it
+tests/        285 tests; the ones that need the database are skipped without it
 app/          Streamlit demo: the two pages, the chart choice and the limits
 mcp_server/   MCP server exposing the same two tools
 .github/      continuous integration
