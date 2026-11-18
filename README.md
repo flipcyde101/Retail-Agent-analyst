@@ -5,9 +5,12 @@ supermarket prices. It shows the SQL it ran, a table or chart, and a short answe
 comes with an automated evaluation that measures how often it is right, what it costs and
 where it fails.
 
+**Try it: [retail-analyst-agent.streamlit.app](https://retail-analyst-agent.streamlit.app/)**
+(10 questions per visit; the first one after a quiet spell waits for the app to wake up).
+
 > Work in progress. Day 9 of 10: the agent is measured ([evaluation report](evals/REPORT.md)),
-> has a demo and an MCP server, and is tested on every push to `main` and every pull
-> request. Publishing the demo is next.
+> has a public demo and an MCP server, and is tested on every push to `main` and every pull
+> request.
 
 ## Data
 
@@ -213,7 +216,8 @@ What to keep in mind when reading these numbers:
 
 ## Demo
 
-A Streamlit app with two pages. Run it from the repo root, with the database up:
+A Streamlit app with two pages, [published here](https://retail-analyst-agent.streamlit.app/).
+Run it locally from the repo root, with the database up:
 
 ```bash
 uv run python -m streamlit run app/streamlit_app.py
@@ -294,8 +298,7 @@ The demo needs two hosted pieces, both with a free tier: a PostgreSQL database a
 Streamlit app. Nothing secret goes in the repo: the connection strings and the API key are
 typed into `.env` locally and into the app's secrets.
 
-This is the procedure, checked against the documentation of both services; it has not been
-carried out yet.
+This is the procedure the published demo was deployed with.
 
 **1. Database** (written for [Neon](https://neon.com); any hosted PostgreSQL works)
 
@@ -335,6 +338,17 @@ time, row and size limits still apply.
 - Before sharing the link, set a monthly spend limit in the model provider's console. The
   demo's own limits (200 questions a day) live in the server's memory and start again when
   it restarts.
+
+The published demo breaks the first rule: its database is in London (eu-west-2). Two
+example questions, each answered with two model calls and one query, measured once each:
+
+| Question | Published demo | Laptop, database in Docker |
+|---|---|---|
+| Prices recorded per year since 2022 | 6.9 s | 3.4 s |
+| Cheapest whole milk per litre | 7.0 s | 7.2 s |
+
+The model's time varies more than the distance adds, so two runs do not show a cost of the
+region, and the database has stayed where it is.
 
 The app goes to sleep after 12 hours without visitors and the database after 5 minutes.
 The first visitor after that waits for both to wake up and for the model client to load;
