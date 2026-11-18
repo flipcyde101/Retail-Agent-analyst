@@ -73,6 +73,13 @@ def test_a_line_runs_over_years_as_labels():
     assert figure.layout.xaxis.type == "category"
 
 
+def test_the_axes_make_room_for_their_labels():
+    # Found on screen: without automargin the years and the y figures were cut off.
+    for figure in (build_chart("line", YEARS), build_chart("bar", CHAINS)):
+        assert figure.layout.xaxis.automargin is True
+        assert figure.layout.yaxis.automargin is True
+
+
 def test_a_line_per_chain_when_the_rows_have_a_name_column():
     figure = build_chart("line", MONTHS_BY_CHAIN)
     assert sorted(trace.name for trace in figure.data) == ["Auchan", "Lidl"]

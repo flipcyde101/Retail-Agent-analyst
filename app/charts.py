@@ -325,6 +325,8 @@ def _tidy(figure: Figure) -> Figure:
     if figure.layout.height is None:
         figure.update_layout(height=380)
     axis = {
+        # Without it, Plotly keeps the small margins above and cuts off the tick labels.
+        "automargin": True,
         "linecolor": GRID,
         "zerolinecolor": GRID,
         "tickfont": {"color": MUTED},
