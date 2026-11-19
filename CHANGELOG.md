@@ -4,7 +4,7 @@ All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
@@ -12,7 +12,7 @@ All notable changes to this project. The format follows
   rows without the download).
 - A contributing guide, issue and pull request templates, and release-note categories.
 
-## 0.1.0 - 2026-11-19
+## [0.1.0] - 2026-11-19
 
 The first release.
 
@@ -30,3 +30,6 @@ The first release.
 - An MCP server that exposes the same two tools.
 - The same agent with its loop in LangGraph, measured against the PydanticAI one.
 - Continuous integration: lint and 322 tests against a real PostgreSQL on every push.
+
+[Unreleased]: https://github.com/pitelet222/Retail-Agent-analyst/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pitelet222/Retail-Agent-analyst/releases/tag/v0.1.0
