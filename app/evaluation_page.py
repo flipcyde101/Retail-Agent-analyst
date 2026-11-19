@@ -20,6 +20,7 @@ RUN_COLUMNS = {
     "question_set": "Set",
     "model": "Model",
     "prompt_version": "Prompt",
+    "engine": "Loop",
     "accuracy_pct": "Accuracy %",
     "refusals": "Correct refusals",
     "wrong_language": "Wrong language",
@@ -29,11 +30,16 @@ RUN_COLUMNS = {
     "latency_p90_s": "p90 s",
 }
 QUESTION_COLUMNS = ["id", "category", "result", "seconds", "queries", "answer", "sql"]
+# The loop of the demo. Runs of the LangGraph version are listed, but the figures of the
+# current version and the cost per prompt version are those of the agent the demo runs.
+DEMO_ENGINE = "pydantic-ai"
 
 
 def load_summary(results_dir: Path = RESULTS_DIR) -> pd.DataFrame:
     """One row per run, oldest first, as the evaluation appended them."""
     summary = pd.read_csv(results_dir / "summary.csv")
+    if "engine" not in summary:
+        summary["engine"] = DEMO_ENGINE  # recorded before there was a second loop
     summary["model"] = summary["model"].str.split(":").str[-1]
     summary["refusals"] = (
         summary["correct_refusals"].astype(str) + " of " + summary["refusal_questions"].astype(str)
@@ -42,9 +48,11 @@ def load_summary(results_dir: Path = RESULTS_DIR) -> pd.DataFrame:
 
 
 def latest_run(summary: pd.DataFrame, question_set: str, prompt_version: str) -> pd.Series | None:
-    """The most recent run of a set with a prompt version, or None if there is none."""
+    """The most recent run of the demo's agent on a set with a prompt version, or None."""
     runs = summary[
-        (summary["question_set"] == question_set) & (summary["prompt_version"] == prompt_version)
+        (summary["question_set"] == question_set)
+        & (summary["prompt_version"] == prompt_version)
+        & (summary["engine"] == DEMO_ENGINE)
     ]
     return None if runs.empty else runs.iloc[-1]
 
@@ -55,7 +63,11 @@ def cost_by_version(summary: pd.DataFrame, model: str) -> pd.DataFrame:
     An average over the runs of a version, with their number beside it, because a single
     run of one version is not comparable with five of another.
     """
-    runs = summary[(summary["question_set"] == "core") & (summary["model"] == model)]
+    runs = summary[
+        (summary["question_set"] == "core")
+        & (summary["model"] == model)
+        & (summary["engine"] == DEMO_ENGINE)
+    ]
     runs = runs.dropna(subset=["cost_per_question_eur"])
     grouped = runs.groupby("prompt_version")["cost_per_question_eur"]
     costs = pd.DataFrame({"eur_per_100": 100 * grouped.mean(), "runs": grouped.size()})

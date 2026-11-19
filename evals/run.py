@@ -5,6 +5,7 @@ Usage:
     uv run python -m evals.run --model anthropic:claude-haiku-5-5 --workers 4   # faster
     uv run python -m evals.run --set natural         # the questions worded like a user's
     uv run python -m evals.run --prompt v1           # an older prompt version, to compare
+    uv run python -m evals.run --engine langgraph    # the same agent, its loop in LangGraph
     uv run python -m evals.run --only L01 R03        # a few questions, nothing is saved
 
 Two files come out of a full run:
@@ -25,6 +26,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from agent import graph_agent
 from agent.agent import PROMPT_VERSION, AgentRun, ask, default_model, warm_up
 from agent.language import detect_language
 from agent.prompts import PROMPTS
@@ -43,6 +45,14 @@ PRICES_USD_PER_MTOK: dict[str, tuple[float, float]] = {
 # ECB reference rate of 2026-11-12: 1 EUR = 1.1081 USD.
 USD_TO_EUR = 1 / 1.1081
 ROWS_KEPT = 5
+
+# Who runs the agent's loop. Same instructions, tools, checks and limits in both; see
+# agent/graph_agent.py. Each engine: the function that answers and the one that warms up.
+DEFAULT_ENGINE = "pydantic-ai"
+ENGINES: dict[str, tuple[Callable[[str, str, str], AgentRun], Callable[[str, str], None]]] = {
+    DEFAULT_ENGINE: (ask, warm_up),
+    "langgraph": (graph_agent.ask, graph_agent.warm_up),
+}
 
 
 class QuestionResult(BaseModel):
@@ -77,6 +87,7 @@ class QuestionResult(BaseModel):
     answer: str
     sql_errors: str  # the error of each failed query, as JSON
     result_rows: str  # first rows of the agent's result, as JSON, to review failures
+    engine: str = DEFAULT_ENGINE
 
 
 class Summary(BaseModel):
@@ -106,6 +117,8 @@ class Summary(BaseModel):
     latency_median_s: float
     latency_p90_s: float
     latency_max_s: float
+    # Last, so that the runs recorded before it existed only needed a value appended.
+    engine: str = DEFAULT_ENGINE
 
 
 def cost_eur(model: str, input_tokens: int, output_tokens: int) -> float | None:
@@ -124,9 +137,11 @@ def evaluate_one(
     ask_fn: Callable[[str, str, str], AgentRun] = ask,
     question_set: str = "core",
     prompt_version: str = PROMPT_VERSION,
+    engine: str = DEFAULT_ENGINE,
 ) -> QuestionResult:
     """Ask one question and grade it. A crash (network, rate limit) is a wrong answer."""
     common = {
+        "engine": engine,
         "run_id": run_id,
         "date": day,
         "question_set": question_set,
@@ -250,6 +265,7 @@ def summarise(results: list[QuestionResult]) -> Summary:
         latency_median_s=round(statistics.median(seconds), 1),
         latency_p90_s=round(percentile(seconds, 90), 1),
         latency_max_s=round(seconds[-1], 1),
+        engine=first.engine,
     )
 
 
@@ -270,14 +286,19 @@ def run_all(
     ask_fn: Callable[[str, str, str], AgentRun] = ask,
     question_set: str = "core",
     prompt_version: str = PROMPT_VERSION,
+    engine: str = DEFAULT_ENGINE,
 ) -> list[QuestionResult]:
     """Evaluate the questions a few at a time; results come back in question order."""
     now = datetime.now()
     run_id = f"{now:%Y%m%d-%H%M%S}_{question_set}_{model.split(':')[-1]}_{prompt_version}"
+    if engine != DEFAULT_ENGINE:
+        run_id += f"_{engine}"
     day = f"{now:%Y-%m-%d}"
 
     def one(question: Question) -> QuestionResult:
-        result = evaluate_one(question, model, run_id, day, ask_fn, question_set, prompt_version)
+        result = evaluate_one(
+            question, model, run_id, day, ask_fn, question_set, prompt_version, engine
+        )
         mark = {True: "ok  ", False: "FAIL", None: "??  "}[result.correct]
         print(f"{mark} {result.id}  {result.seconds:5.1f}s  {result.grade_reason}", flush=True)
         return result
@@ -321,7 +342,14 @@ def main() -> None:
     parser.add_argument("--only", nargs="+", metavar="ID", help="run these ids, save nothing")
     parser.add_argument("--set", choices=list(QUESTION_SETS), default="core", dest="set_name")
     parser.add_argument("--prompt", choices=sorted(PROMPTS), default=PROMPT_VERSION)
+    parser.add_argument(
+        "--engine",
+        choices=list(ENGINES),
+        default=DEFAULT_ENGINE,
+        help="what runs the agent's loop: PydanticAI (the agent of the demo) or LangGraph",
+    )
     args = parser.parse_args()
+    ask_fn, warm_up_fn = ENGINES[args.engine]
     sys.stdout.reconfigure(encoding="utf-8")
 
     try:
@@ -339,12 +367,18 @@ def main() -> None:
     started = time.perf_counter()
     try:
         describe_schema()  # fail now, not fifty times, if the database is not running
-        warm_up(model, args.prompt)
+        warm_up_fn(model, args.prompt)
     except DatabaseUnavailableError as error:
         sys.exit(f"{error}\nIs the database running? (docker compose up -d)")
     print(f"start-up {time.perf_counter() - started:.1f}s (not counted in the latency)\n")
     results = run_all(
-        questions, model, args.workers, question_set=args.set_name, prompt_version=args.prompt
+        questions,
+        model,
+        args.workers,
+        ask_fn=ask_fn,
+        question_set=args.set_name,
+        prompt_version=args.prompt,
+        engine=args.engine,
     )
     summary = summarise(results)
     print()

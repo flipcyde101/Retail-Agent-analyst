@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -15,7 +16,7 @@ from agent import agent as agent_module
 from agent.agent import AgentAnswer, AgentRun, SqlAttempt
 from agent.models import SqlResult
 from app import ask_page
-from app.evaluation_page import latest_run, load_run, load_summary
+from app.evaluation_page import cost_by_version, latest_run, load_run, load_summary
 from app.limits import MAX_QUESTION_CHARS, QUESTIONS_PER_SESSION, DailyBudget, problem_with
 
 APP = str(Path(__file__).parent.parent / "app" / "streamlit_app.py")
@@ -262,6 +263,36 @@ def test_the_summary_and_every_run_file_can_be_read():
         questions = load_run(run_id)
         assert set(questions["result"]) <= {"right", "wrong", "read by hand"}
         assert {"id", "category", "seconds", "queries", "answer", "sql"} <= set(questions.columns)
+
+
+def test_the_figures_of_the_current_version_are_those_of_the_demo_loop():
+    summary = pd.DataFrame(
+        {
+            "run_id": ["a", "b"],
+            "question_set": ["core", "core"],
+            "model": ["claude-haiku-5-5", "claude-haiku-5-5"],
+            "prompt_version": ["v5", "v5"],
+            "engine": ["pydantic-ai", "langgraph"],
+            "cost_per_question_eur": [0.001, 0.009],
+        }
+    )
+    # The LangGraph run is newer, but the demo does not run it.
+    assert latest_run(summary, "core", "v5")["run_id"] == "a"
+    costs = cost_by_version(summary, "claude-haiku-5-5")
+    assert costs["eur_per_100"].tolist() == [0.1]
+    assert costs["runs"].tolist() == [1]
+
+
+def test_a_summary_without_the_loop_column_is_read_as_the_demo_loop(tmp_path):
+    (tmp_path / "summary.csv").write_text(
+        "run_id,question_set,model,prompt_version,correct_refusals,refusal_questions\n"
+        "a,core,anthropic:claude-haiku-5-5,v5,10,10\n",
+        encoding="utf-8",
+    )
+    summary = load_summary(tmp_path)
+
+    assert summary["engine"].tolist() == ["pydantic-ai"]
+    assert latest_run(summary, "core", "v5") is not None
 
 
 def test_the_evaluation_page_says_so_when_there_are_no_results(tmp_path, monkeypatch):

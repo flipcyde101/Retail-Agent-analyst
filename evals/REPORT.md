@@ -1,8 +1,8 @@
 # Evaluation report
 
 What failed, what fixed it and what it cost. Every figure comes from the files in
-`evals/results/`; `summary.csv` has one line per run. All runs are from 2026-11-13 and ask the
-questions one at a time, so the latency is what a single user would see.
+`evals/results/`; `summary.csv` has one line per run. The runs are from 2026-11-13 to
+2026-11-18 and ask the questions one at a time, so the latency is what a single user would see.
 
 ## Summary
 
@@ -24,7 +24,9 @@ the questions before two of them were corrected, gave 90 % and 98 %. The latency
 v4 is from runs made minutes apart, with the model client loaded beforehand; comparison 3
 has every run.
 
-v5, the current version, is v4 plus one line with today's date (comparison 4).
+v5, the current version, is v4 plus one line with today's date (comparison 4). The same
+agent with its loop written in LangGraph instead of PydanticAI scored the same, at the same
+cost and speed (comparison 5).
 
 On the natural set (22 questions worded like a user's), v3 gets 20 of the 20 graded
 automatically and v4 gets 19 of 20 in each of two runs, with 4 of 4 refusals and no answer
@@ -271,6 +273,56 @@ and a reminder that the data may end before it.
 - So the change is small: the model no longer has to think of asking the database for the
   date, and no longer finds recent dates surprising. It is not a measured improvement.
 - The two runs are a day apart, so their latency does not compare.
+
+## Comparison 5: the loop in PydanticAI or in LangGraph (Haiku 5.5, v5, core set)
+
+`agent/graph_agent.py` is the same agent written as a LangGraph graph with three nodes
+(`model`, `tools`, `check`), calling the Anthropic SDK directly. Instructions, tools, checks
+on the answer and limits are shared with `agent/agent.py`. Run it with
+`uv run python -m evals.run --engine langgraph`.
+
+For the comparison to measure the loop and nothing else, the model must receive the same
+requests from both. A test sends six scripted conversations (a query fixed, an answer
+rejected, two queries in one turn, an empty response, a run that gives up...) through both
+versions and checks the requests field by field. Getting there took more than the graph:
+
+- A review of the first version found ten differences with PydanticAI, each checked against
+  its source: the wording sent back after an error, failures counted per call instead of per
+  turn, tools run one after the other instead of at the same time, an empty response that
+  crashed the run, a slightly different answer schema.
+- The test then found what no reading had: after it rejects an answer, PydanticAI adds a
+  second block to the system prompt explaining how its own messages are marked, and keeps it
+  for the rest of the run. Nothing in the agent's code asks for it.
+- To word those messages exactly as PydanticAI does, the graph calls PydanticAI's own
+  private functions for them. That ties it to the installed version; the test says when it
+  stops matching.
+- The first full runs of the graph failed on every question without reaching the model: the
+  SDK refused a timeout built with the wrong HTTP library, which the fake client of the tests
+  accepted. They were deleted, as they measured nothing, and a test now runs the real SDK
+  with only the network replaced.
+
+Four runs alternated, minutes apart (two more of PydanticAI from minutes before are in
+`summary.csv` too: 112 and 114 calls, 0.0415 and 0.0411 EUR):
+
+| | LangGraph (19:24) | PydanticAI (19:27) | LangGraph (19:30) | PydanticAI (19:33) |
+|---|---|---|---|---|
+| Accuracy | 100 % | 100 % | 100 % | 100 % |
+| Correct refusals | 10 of 10 | 10 of 10 | 10 of 10 | 10 of 10 |
+| Failed queries | 0 | 0 | 3 | 1 |
+| Model calls | 114 | 116 | 118 | 115 |
+| Queries run | 56 | 53 | 56 | 55 |
+| Cost | 0.042 EUR | 0.043 EUR | 0.043 EUR | 0.042 EUR |
+| Latency, median / p90 / max | 3.2 / 4.4 / 5.9 s | 3.2 / 5.0 / 6.7 s | 3.1 / 4.5 / 6.9 s | 3.2 / 4.4 / 6.1 s |
+
+- **No difference shows.** Calls, cost and latency fall within the spread of two runs of
+  the same loop: the framework that drives the loop adds nothing measurable here.
+- **What differs is the code.** The graph makes the loop visible: three nodes, three
+  routing functions, the state in one typed dictionary. PydanticAI hides the same loop
+  behind decorators and handles details (retry wording, per-turn counting, empty responses,
+  parallel tools) that the graph had to write out: 448 lines against 381 for the PydanticAI
+  version, which also holds the shared pieces.
+- **The demo keeps PydanticAI.** The graph brings nothing measurable, and matching its
+  behaviour depends on PydanticAI's private functions.
 
 ## Against the targets
 

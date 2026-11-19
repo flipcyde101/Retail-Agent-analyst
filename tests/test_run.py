@@ -7,7 +7,17 @@ import pytest
 from agent.agent import AgentAnswer, AgentRun, SqlAttempt
 from agent.models import SqlResult
 from evals.questions import Question
-from evals.run import cost_eur, evaluate_one, percentile, run_all, summarise, write_csv
+from evals.run import (
+    ENGINES,
+    SUMMARY_PATH,
+    Summary,
+    cost_eur,
+    evaluate_one,
+    percentile,
+    run_all,
+    summarise,
+    write_csv,
+)
 
 MODEL = "anthropic:claude-haiku-5-5"
 
@@ -165,6 +175,31 @@ def test_the_prompt_version_reaches_the_agent_and_the_results():
     assert seen == ["v1"]
     assert results[0].prompt_version == "v1"
     assert results[0].run_id.endswith("_v1")
+
+
+def test_the_loop_that_ran_is_recorded_in_the_run_id_and_in_every_row():
+    results = run_all(QUESTIONS[:1], MODEL, ask_fn=fake_ask, engine="langgraph")
+
+    assert results[0].engine == "langgraph"
+    assert results[0].run_id.endswith("_langgraph")
+    assert summarise(results).engine == "langgraph"
+
+
+def test_the_demo_loop_keeps_the_run_ids_it_always_had():
+    results = run_all(QUESTIONS[:1], MODEL, ask_fn=fake_ask, prompt_version="v5")
+
+    assert results[0].engine == "pydantic-ai"
+    assert results[0].run_id.endswith("_v5")
+
+
+def test_the_summary_file_on_record_names_the_loop_of_every_run():
+    # Runs recorded before the LangGraph version had the column added with "pydantic-ai";
+    # a run appended now must line up with that header.
+    with SUMMARY_PATH.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames == list(Summary.model_fields)
+    assert {row["engine"] for row in rows} <= set(ENGINES)
 
 
 def test_an_answer_in_another_language_is_counted_but_still_graded_on_its_content():
