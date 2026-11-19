@@ -8,9 +8,15 @@ where it fails.
 **Try it: [retail-analyst-agent.streamlit.app](https://retail-analyst-agent.streamlit.app/)**
 (10 questions per visit; the first one after a quiet spell waits for the app to wake up).
 
-> Work in progress. Day 9 of 10: the agent is measured ([evaluation report](evals/REPORT.md)),
-> has a public demo and an MCP server, and is tested on every push to `main` and every pull
-> request.
+What is in it:
+
+- An agent that writes and runs read-only SQL, checked on its syntax tree, and returns only
+  answers backed by a query it ran.
+- An evaluation of 50 questions with computed answers: 100 % right and 10 of 10 correct
+  refusals with the current prompt, at about 0.04 EUR for the 50
+  ([evaluation report](evals/REPORT.md)).
+- A public demo, an MCP server with the same tools, the same agent written in LangGraph to
+  compare, and tests on every push.
 
 ## Data
 
@@ -416,3 +422,9 @@ app/          Streamlit demo: the two pages, the chart choice and the limits
 mcp_server/   MCP server exposing the same two tools
 .github/      continuous integration
 ```
+
+## License
+
+The code is under the [MIT License](LICENSE). The data is not in the repo: it comes from
+[Open Prices](https://prices.openfoodfacts.org) by Open Food Facts, under the
+[ODbL](https://opendatacommons.org/licenses/odbl/1-0/).
