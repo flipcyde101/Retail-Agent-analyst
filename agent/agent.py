@@ -170,22 +170,59 @@ FALLBACK_ANSWERS = {
 agent = Agent(output_type=AgentAnswer, deps_type=RunState, defer_model_check=True)
 
 
-@agent.instructions
-def instructions(ctx: RunContext[RunState]) -> str:
-    text = PROMPTS[ctx.deps.prompt_version]
-    if ctx.deps.inline_schema:
+# The instructions, the two tools and the check on the answer are plain functions of the
+# run's state, and the PydanticAI hooks below only call them. agent/graph_agent.py runs the
+# same functions in a LangGraph loop, so a comparison of the two measures the loop alone.
+
+
+def instruction_text(state: RunState) -> str:
+    """The system prompt for one question: the version's text plus what this run adds."""
+    text = PROMPTS[state.prompt_version]
+    if state.inline_schema:
         text += f"\nDatabase schema:\n{schema_text()}\n"
-    if ctx.deps.prompt_version in DATE_VERSIONS:
+    if state.prompt_version in DATE_VERSIONS:
         text += (
-            f"\nToday's date is {today().isoformat()}. Use it for \"this year\", \"last "
-            "month\" and the like. The data may end before today: max(date) tells where.\n"
+            f'\nToday\'s date is {today().isoformat()}. Use it for "this year", "last '
+            'month" and the like. The data may end before today: max(date) tells where.\n'
         )
-    language = ctx.deps.required_language
+    language = state.required_language
     if language:
         # Telling the model beats asking it to work it out: with the prompt rule alone (v2)
         # it kept answering English questions in French, the language of the data.
         text += f"\nThis question is written in {NAMES[language]}: answer in {NAMES[language]}.\n"
     return text
+
+
+def read_schema(state: RunState) -> SchemaDescription:
+    """The describe_schema tool: the schema, and a note that the model has seen it."""
+    state.schema_seen = True
+    return tools.describe_schema()
+
+
+def run_query(state: RunState, query: str) -> SqlResult:
+    """The run_sql tool: run the query and remember it, or raise ModelRetry with the error.
+
+    ModelRetry carries the message the model needs to correct its query.
+    """
+    cleaned = strip_json_debris(query) if state.strict else query
+    repaired = cleaned != query.rstrip()
+    try:
+        result = tools.run_sql(cleaned)
+    except (SqlValidationError, SqlExecutionError) as error:
+        state.attempts.append(
+            SqlAttempt(sql=cleaned, ok=False, error=str(error), repaired=repaired)
+        )
+        raise ModelRetry(str(error)) from error
+    state.attempts.append(
+        SqlAttempt(sql=cleaned, ok=True, row_count=result.row_count, repaired=repaired)
+    )
+    state.results[_normalise(cleaned)] = result
+    return result
+
+
+@agent.instructions
+def instructions(ctx: RunContext[RunState]) -> str:
+    return instruction_text(ctx.deps)
 
 
 async def _only_without_inline_schema(
@@ -198,8 +235,7 @@ async def _only_without_inline_schema(
 @agent.tool(prepare=_only_without_inline_schema)
 def describe_schema(ctx: RunContext[RunState]) -> SchemaDescription:
     """List the tables and views with their columns, types and comments. Call this first."""
-    ctx.deps.schema_seen = True
-    return tools.describe_schema()
+    return read_schema(ctx.deps)
 
 
 @agent.tool(retries=MAX_SQL_ATTEMPTS - 1)
@@ -209,28 +245,22 @@ def run_sql(ctx: RunContext[RunState], query: str) -> SqlResult:
     The query must be a single SELECT with a LIMIT of at most 200. On error the message
     explains what to fix.
     """
-    cleaned = strip_json_debris(query) if ctx.deps.strict else query
-    repaired = cleaned != query.rstrip()
-    try:
-        result = tools.run_sql(cleaned)
-    except (SqlValidationError, SqlExecutionError) as error:
-        ctx.deps.attempts.append(
-            SqlAttempt(sql=cleaned, ok=False, error=str(error), repaired=repaired)
-        )
-        # ModelRetry sends the message back to the model as "try again", and counts
-        # against the tool's retries. This is the self-correction loop.
-        raise ModelRetry(str(error)) from error
-    ctx.deps.attempts.append(
-        SqlAttempt(sql=cleaned, ok=True, row_count=result.row_count, repaired=repaired)
-    )
-    ctx.deps.results[_normalise(cleaned)] = result
-    return result
+    # A ModelRetry raised here goes back to the model as "try again" and counts against
+    # the tool's retries. This is the self-correction loop.
+    return run_query(ctx.deps, query)
 
 
 @agent.output_validator
 def answer_is_backed_by_a_query(ctx: RunContext[RunState], output: AgentAnswer) -> AgentAnswer:
-    """Reject an answer whose SQL was never executed: that is how invented numbers get in."""
-    state = ctx.deps
+    return check_answer(ctx.deps, output)
+
+
+def check_answer(state: RunState, output: AgentAnswer) -> AgentAnswer:
+    """Reject an answer whose SQL was never executed: that is how invented numbers get in.
+
+    Also an empty answer, one in another language than the question, and a refusal made
+    before looking at the data. Raises ModelRetry with what to fix.
+    """
     if state.strict and not output.answer.strip():
         raise ModelRetry("The answer field is empty. Write the answer, or explain the refusal.")
     required = state.required_language

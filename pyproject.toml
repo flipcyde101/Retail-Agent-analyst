@@ -5,6 +5,8 @@ description = "LLM agent that answers natural-language questions over a PostgreS
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=2.8.0",
+    "langgraph>=1.2.22",
     "mcp>=2.3.0",
     # Streamlit needs pandas. 3.x works too, but on the Windows machine this was written
     # on, Application Control blocks one of its DLLs.

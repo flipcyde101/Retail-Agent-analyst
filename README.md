@@ -134,6 +134,18 @@ be reproduced.
 | `agent/tools.py` | `describe_schema` and `run_sql`, plain functions with no framework |
 | `agent/sql_guard.py` | The SQL rules |
 | `agent/language.py` | Guesses English, Spanish or French from a short text |
+| `agent/graph_agent.py` | The same agent with its loop written in LangGraph, to compare |
+
+### The same agent in LangGraph
+
+`agent/graph_agent.py` runs the same instructions, tools, checks and limits as a LangGraph
+graph of three nodes (call the model, run the tools, check the answer) and calls the
+Anthropic SDK directly. A test sends scripted conversations through both versions and
+checks that the model receives the same requests, so that measuring them compares the loop
+alone. Measured on the core set, four runs alternated: same accuracy (100 %), same model
+calls, cost and latency within the spread of two runs of one version
+([comparison 5](evals/REPORT.md#comparison-5-the-loop-in-pydanticai-or-in-langgraph-haiku-55-v5-core-set)).
+The demo keeps PydanticAI: the graph is more code for the same result.
 
 ## Evaluation set
 
@@ -386,6 +398,7 @@ uv run python -m evals.run                     # measure the agent: about 5 minu
 uv run python -m evals.run --set natural       # the 22 questions worded like a user's
 uv run python -m evals.run --only L01 T03      # a few questions, nothing is saved
 uv run python -m evals.run --prompt v3         # an older version, to compare
+uv run python -m evals.run --engine langgraph  # the same agent, its loop in LangGraph
 ```
 
 The first question of a process waits 10 to 17 s while the model client loads; the
@@ -396,9 +409,9 @@ evaluation does that before it starts the clock.
 ```
 data/         coverage count, cleaning and loading scripts, sample rows for CI (not the data)
 sql/          schema, view and sanity checks
-agent/        agent, prompts, tools, SQL rules, command line
+agent/        agent, its LangGraph version, prompts, tools, SQL rules, command line
 evals/        question sets, grader, runner, results and the report
-tests/        285 tests; the ones that need the database are skipped without it
+tests/        322 tests; the ones that need the database are skipped without it
 app/          Streamlit demo: the two pages, the chart choice and the limits
 mcp_server/   MCP server exposing the same two tools
 .github/      continuous integration
