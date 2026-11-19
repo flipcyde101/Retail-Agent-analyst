@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not work, or the agent gave a wrong answer.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not paste API keys, passwords or connection strings.
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - The live demo
+        - My own install (setup.sh, command line or Streamlit)
+        - The MCP server
+        - The evaluation
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: For a wrong answer, the question, the answer and the SQL the agent showed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: Commands you ran and their output, if it is not the live demo.
+      render: shell
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, and the commit or date of your clone.

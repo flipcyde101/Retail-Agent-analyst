@@ -1,12 +1,26 @@
 # Retail analyst agent
 
-An LLM agent that answers natural-language questions over a PostgreSQL database of
-supermarket prices. It shows the SQL it ran, a table or chart, and a short answer, and it
-comes with an automated evaluation that measures how often it is right, what it costs and
-where it fails.
+[![CI](https://github.com/pitelet222/Retail-Agent-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/pitelet222/Retail-Agent-analyst/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Live demo](https://img.shields.io/badge/demo-live-brightgreen.svg)](https://retail-analyst-agent.streamlit.app/)
+
+**Ask 185,000 real supermarket prices a question in plain language: get the answer, the
+chart and the SQL behind it.**
+
+![The live demo answering "Which chain has the cheapest whole milk per litre?" with a chart and the SQL it ran](docs/demo.gif)
 
 **Try it: [retail-analyst-agent.streamlit.app](https://retail-analyst-agent.streamlit.app/)**
 (10 questions per visit; the first one after a quiet spell waits for the app to wake up).
+
+Run it yourself (needs [uv](https://docs.astral.sh/uv/) and Docker):
+
+```bash
+git clone https://github.com/pitelet222/Retail-Agent-analyst && cd Retail-Agent-analyst && ./setup.sh
+```
+
+An LLM agent over a PostgreSQL database of French supermarket prices. It shows the SQL it
+ran, a table or chart, and a short answer, and it comes with an automated evaluation that
+measures how often it is right, what it costs and where it fails.
 
 What is in it:
 
@@ -383,8 +397,18 @@ one test that needs the real data, the check of the 50 expected answers, is skip
 
 ## Run it
 
-Requires [uv](https://docs.astral.sh/uv/) and Docker. Download the data first (see
-[Data](#data)).
+Requires [uv](https://docs.astral.sh/uv/), Docker and a bash shell (on Windows, WSL or Git
+Bash). One command does everything below, then you add your model's API key to `.env`:
+
+```bash
+./setup.sh            # downloads the dumps (about 100 MB) and loads the real data
+./setup.sh --sample   # a dozen made-up rows instead, to try it in a minute
+```
+
+It creates `.env` with random database passwords, starts PostgreSQL, installs the
+dependencies and loads the data. It refuses to run when `ADMIN_DATABASE_URL` is set, because
+the loader recreates the tables. The same steps by hand, after downloading the data (see
+[Data](#data)):
 
 ```bash
 cp .env.example .env        # then edit the passwords and add the API key of the model
@@ -420,8 +444,13 @@ evals/        question sets, grader, runner, results and the report
 tests/        322 tests; the ones that need the database are skipped without it
 app/          Streamlit demo: the two pages, the chart choice and the limits
 mcp_server/   MCP server exposing the same two tools
-.github/      continuous integration
+docs/         the demo GIF and the social preview image
+.github/      continuous integration, issue and pull request templates
+setup.sh      one command from a fresh clone to a loaded database
 ```
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

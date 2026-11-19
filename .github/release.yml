@@ -1,0 +1,13 @@
+# Categories for the release notes GitHub writes from merged pull requests.
+changelog:
+  exclude:
+    labels: ["duplicate", "invalid", "wontfix"]
+  categories:
+    - title: New features
+      labels: ["enhancement"]
+    - title: Fixes
+      labels: ["bug"]
+    - title: Documentation
+      labels: ["documentation"]
+    - title: Other changes
+      labels: ["*"]

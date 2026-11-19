@@ -1,0 +1,20 @@
+name: Idea or improvement
+description: Suggest a feature, a new kind of question, or a change to the evaluation.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would it let you do
+      description: The problem or the question you cannot answer today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How it could work
+  - type: textarea
+    id: measure
+    attributes:
+      label: How we would know it worked
+      description: For changes to the agent, which questions or figures of the evaluation should change.
